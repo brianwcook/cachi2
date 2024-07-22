@@ -1,4 +1,5 @@
-FROM docker.io/library/rockylinux:9@sha256:d7be1c094cc5845ee815d4632fe377514ee6ebcf8efaed6892889657e5ddaaa6 as rockylinux9
+FROM docker.io/library/rockylinux:8 as rockylinux8
+FROM registry.access.redhat.com/ubi8/ubi as ubi
 FROM docker.io/library/golang:1.20.0-bullseye as golang_120
 FROM docker.io/library/golang:1.21.0-bullseye as golang_121
 FROM docker.io/library/node:22.3.0-bullseye as node_223
@@ -6,15 +7,24 @@ FROM docker.io/library/node:22.3.0-bullseye as node_223
 ########################
 # PREPARE OUR BASE IMAGE
 ########################
-FROM rockylinux9 as base
+
+FROM ubi as base
+COPY --from=rockylinux8 /etc/yum.repos.d/Rocky-AppStream.repo /etc/yum.repos.d/
+COPY --from=rockylinux8 /etc/pki/rpm-gpg/RPM-GPG-KEY-rockyofficial /etc/pki/rpm-gpg/
+RUN sed -i 's|enabled=1|enabled=0|g' /etc/yum.repos.d/Rocky-AppStream.repo
+
 RUN dnf -y install \
     --setopt install_weak_deps=0 \
     --nodocs \
-    createrepo_c \
     git-core \
-    python3 \
-    && dnf clean all
+    python3 \ 
+    libffi-devel \
+    subscription-manager && \
+    dnf clean all
 
+RUN dnf install --enablerepo=appstream -y createrepo_c
+
+# run another one 
 ######################
 # BUILD/INSTALL CACHI2
 ######################
@@ -28,10 +38,14 @@ RUN dnf -y install \
     python3-devel \
     python3-pip \
     python3-setuptools \
-    && dnf clean all
+    && dnf clean all && \
+    python3 --version
 
 RUN python3 -m venv /venv && \
-    /venv/bin/pip install -r requirements.txt --no-deps --no-cache-dir --require-hashes && \
+    # todo: add back --require-hashes --no-deps when the pip-compile issue is fixed
+    /venv/bin/pip install --upgrade pip && \
+    /venv/bin/pip install multidict aiosignal typing_extensions attrs yarl async_timeout idna_ssl --no-cache-dir  && \
+    /venv/bin/pip install -r requirements.txt --no-cache-dir  && \
     /venv/bin/pip install --no-cache-dir .
 
 ##########################
