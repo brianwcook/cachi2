@@ -664,6 +664,7 @@ def _get_repository_name(source_dir: RootedPath) -> str:
     return f"{url.hostname}{url.path.rstrip('/').removesuffix('.git')}"
 
 
+# NOTE: get rid of this go.mod parser once we can assume Go > 1.21 (1.20 can't parse micro release)
 def _get_gomod_version(go_mod_file: RootedPath) -> Tuple[Optional[str], Optional[str]]:
     """Return the required/recommended version of Go from go.mod.
 
@@ -677,20 +678,31 @@ def _get_gomod_version(go_mod_file: RootedPath) -> Tuple[Optional[str], Optional
     go_version = None
     toolchain_version = None
 
-    go_version_regex = r"^\s*go\s+(?P<ver>\d\.\d+(:?\.\d+)?)\s*$"
-    toolchain_version_regex = r"^\s*toolchain\s+go(?P<ver>\d\.\d+(:?\.\d+)?)\s*$"
+    # this needs to be able to handle arbitrary pre-release version identifiers and commentaries
+    # as well, since Go itself can parse it
+    # - 'go 1.21.0'
+    # - '   go 1.21.0rc4'
+    # - 'go 1.21beta1//commentary'
+    version_str_regex = r"(?P<ver>\d+\.\d+(:?\.\d+)?(?:[a-zA-Z]+\d+)?)"
+    post_version_chars_regex = r"\s*(?:\/\/.*)?"
+    go_version_regex = rf"^\s*go\s+{version_str_regex}{post_version_chars_regex}$"
+    toolchain_version_regex = rf"^\s*toolchain\s+go{version_str_regex}{post_version_chars_regex}$"
 
     go_pattern = re.compile(go_version_regex)
     toolchain_pattern = re.compile(toolchain_version_regex)
 
     with open(go_mod_file) as f:
-        for line in f:
+        for i, line in enumerate(f):
             if not go_version and (match := re.match(go_pattern, line)):
                 go_version = match.group("ver")
+                log.debug("Matched Go version %s on go.mod line %d: '%s'", go_version, i, line)
                 continue
 
             if not toolchain_version and (match := re.match(toolchain_pattern, line)):
                 toolchain_version = match.group("ver")
+                log.debug(
+                    "Matched toolchain %s on go.mod line %d: '%s'", toolchain_version, i, line
+                )
                 continue
 
     return (go_version, toolchain_version)
@@ -750,22 +762,22 @@ def _setup_go_toolchain(go_mod_file: RootedPath) -> Go:
     target_version = None
     go_max_version = version.Version("1.21")
     go_base_version = go.version
-    go_mod_version_msg = "go.mod reported versions: '{}'[go], '{}'[toolchain]"
+    go_mod_version_msg = "go.mod reported versions: '%s'[go], '%s'[toolchain]"
 
     go_version_str, toolchain_version_str = _get_gomod_version(go_mod_file)
+    log.info(
+        go_mod_version_msg,
+        go_version_str if go_version_str else "-",
+        toolchain_version_str if toolchain_version_str else "-",
+    )
+
     if not go_version_str:
         # Go added the 'go' directive to go.mod in 1.12 [1]. If missing, 1.16 is assumed [2].
         # For our version comparison purposes we set the version explicitly to 1.20 if missing.
         # [1] https://go.dev/doc/go1.12#modules
         # [2] https://go.dev/ref/mod#go-mod-file-go
         go_version_str = "1.20"
-        go_mod_version_msg += " (cachi2 enforced)"
-
-    log.info(
-        go_mod_version_msg.format(
-            go_version_str, toolchain_version_str if toolchain_version_str else "-"
-        )
-    )
+        log.debug("Could not parse Go version from go.mod, using %s as fallback", go_version_str)
 
     if not toolchain_version_str:
         toolchain_version_str = go_version_str
