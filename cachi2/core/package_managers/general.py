@@ -43,9 +43,25 @@ def download_binary_file(
     :raise FetchError: If download failed
     """
     timeout = get_config().requests_timeout
+    
+
+
+    # new function
+    import os
+    rhsm_cert=os.getenv("C2_CLIENT_CERT")
+    rhsm_key=os.getenv("C2_CLIENT_KEY")
+    if rhsm_cert is None or rhsm_key is None:
+        client_tls_auth=None
+    elif not os.path.isfile(path=rhsm_cert) or not os.path.isfile(path=rhsm_key) :
+        # todo: custom exception
+        raise(FileNotFoundError)
+    else:
+        client_tls_auth = (rhsm_cert, rhsm_key)
+    
+
     try:
         resp = pkg_requests_session.get(
-            url, stream=True, verify=not insecure, auth=auth, timeout=timeout
+            url, stream=True, verify=not insecure, auth=auth, timeout=timeout, cert=client_tls_auth
         )
         resp.raise_for_status()
     except requests.RequestException as e:
