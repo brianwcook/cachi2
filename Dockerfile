@@ -42,10 +42,7 @@ RUN dnf -y install \
     python3 --version
 
 RUN python3 -m venv /venv && \
-    # todo: add back --require-hashes --no-deps when the pip-compile issue is fixed
-    /venv/bin/pip install --upgrade pip && \
-    /venv/bin/pip install multidict aiosignal typing_extensions attrs yarl async_timeout idna_ssl --no-cache-dir  && \
-    /venv/bin/pip install -r requirements.txt --no-cache-dir  && \
+    /venv/bin/pip install -r requirements.txt --no-deps --no-cache-dir --require-hashes && \
     /venv/bin/pip install --no-cache-dir .
 
 ##########################
