@@ -1,5 +1,5 @@
-FROM docker.io/library/rockylinux:8 as rockylinux8
-FROM registry.access.redhat.com/ubi8/ubi as ubi
+FROM docker.io/library/rockylinux:9 as rockylinux
+FROM registry.access.redhat.com/ubi9/ubi as ubi
 FROM docker.io/library/golang:1.20.0-bullseye as golang_120
 FROM docker.io/library/golang:1.21.0-bullseye as golang_121
 FROM docker.io/library/node:22.3.0-bullseye as node_223
@@ -9,10 +9,10 @@ FROM docker.io/library/node:22.3.0-bullseye as node_223
 ########################
 
 FROM ubi as base
-COPY --from=rockylinux8 /etc/yum.repos.d/Rocky-AppStream.repo /etc/yum.repos.d/
-COPY --from=rockylinux8 /etc/pki/rpm-gpg/RPM-GPG-KEY-rockyofficial /etc/pki/rpm-gpg/
-RUN sed -i 's|enabled=1|enabled=0|g' /etc/yum.repos.d/Rocky-AppStream.repo
-
+COPY --from=rockylinux /etc/yum.repos.d/rocky.repo /etc/yum.repos.d/
+COPY --from=rockylinux /etc/pki/rpm-gpg/RPM-GPG-KEY-Rocky-9 /etc/pki/rpm-gpg/
+RUN sed -i 's|enabled=1|enabled=0|g' /etc/yum.repos.d/rocky.repo
+RUN sed -i 's|$rltype||g' /etc/yum.repos.d/rocky.repo
 RUN dnf -y install \
     --setopt install_weak_deps=0 \
     --nodocs \
