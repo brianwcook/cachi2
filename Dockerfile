@@ -1,4 +1,5 @@
-FROM docker.io/library/rockylinux:9@sha256:d7be1c094cc5845ee815d4632fe377514ee6ebcf8efaed6892889657e5ddaaa6 as rockylinux9
+FROM docker.io/library/rockylinux:9 as rockylinux
+FROM registry.access.redhat.com/ubi9/ubi as ubi
 FROM docker.io/library/golang:1.20.0-bullseye as golang_120
 FROM docker.io/library/golang:1.21.0-bullseye as golang_121
 FROM docker.io/library/node:22.3.0-bullseye as node_223
@@ -6,15 +7,24 @@ FROM docker.io/library/node:22.3.0-bullseye as node_223
 ########################
 # PREPARE OUR BASE IMAGE
 ########################
-FROM rockylinux9 as base
+
+FROM ubi as base
+COPY --from=rockylinux /etc/yum.repos.d/rocky.repo /etc/yum.repos.d/
+COPY --from=rockylinux /etc/pki/rpm-gpg/RPM-GPG-KEY-Rocky-9 /etc/pki/rpm-gpg/
+RUN sed -i 's|enabled=1|enabled=0|g' /etc/yum.repos.d/rocky.repo
+RUN sed -i 's|$rltype||g' /etc/yum.repos.d/rocky.repo
 RUN dnf -y install \
     --setopt install_weak_deps=0 \
     --nodocs \
-    createrepo_c \
     git-core \
-    python3 \
-    && dnf clean all
+    python3 \ 
+    libffi-devel \
+    subscription-manager && \
+    dnf clean all
 
+RUN dnf install --enablerepo=appstream -y createrepo_c
+
+# run another one 
 ######################
 # BUILD/INSTALL CACHI2
 ######################
@@ -28,7 +38,8 @@ RUN dnf -y install \
     python3-devel \
     python3-pip \
     python3-setuptools \
-    && dnf clean all
+    && dnf clean all && \
+    python3 --version
 
 RUN python3 -m venv /venv && \
     /venv/bin/pip install -r requirements.txt --no-deps --no-cache-dir --require-hashes && \
