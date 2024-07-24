@@ -29,7 +29,7 @@ spec:
             - name: revision
           steps:
             - name: tag-with-latest
-              image: registry.access.redhat.com/ubi9/skopeo:latest@sha256:23c9ed4af1f42614bdc56309452568b2110a67f23102f42f6a6582a63b63dcdb
+              image: registry.access.redhat.com/ubi9/skopeo:latest@sha256:84c84af0a1c17cfe8b5ee3782f7a6f886b8e0807823fc0ac1d457fa5654ea3dc
               script: |
                 #!/usr/bin/env bash
                 SRC_REF="quay.io/redhat-appstudio/cachi2:$(params.revision)"
