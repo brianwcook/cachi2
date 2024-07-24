@@ -7,6 +7,8 @@ from os import PathLike
 from pathlib import Path
 from typing import Any, Dict, Optional, Union, no_type_check
 from urllib.parse import quote
+import os
+import ssl
 
 import yaml
 from pydantic import ValidationError
@@ -195,7 +197,7 @@ def _download(lockfile: RedhatRpmsLock, output_dir: Path) -> dict[Path, Any]:
             }
             Path.mkdir(dest.parent, parents=True, exist_ok=True)
 
-        asyncio.run(async_download_files(files, get_config().concurrency_limit))
+        asyncio.run(async_download_files(files, get_config().concurrency_limit, ssl_context=get_ssl_context()))
     return metadata
 
 
@@ -378,3 +380,20 @@ def _generate_repofiles(
 
             with open(repo_file_path, "w") as f:
                 repofile.write(f)
+
+def get_ssl_context():
+    client_cert=os.getenv("C2_CLIENT_CERT")
+    client_key=os.getenv("C2_CLIENT_KEY")
+    if client_cert is None or client_key is None:
+        log.info(f"No client certificates will be used.")
+        ssl_ctx=None
+    elif not os.path.isfile(path=client_cert) or not os.path.isfile(path=client_key) :
+        raise(FileNotFoundError)
+    else:
+        ssl_ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+        # Load the client cert chain. This will be sent to the server
+        ssl_ctx.load_cert_chain(client_cert, client_key)
+        log.info(f"Using client certificate auth.")
+        ssl_ctx.check_hostname = False
+        ssl_ctx.verify_mode = ssl.CERT_NONE
+    return ssl_ctx

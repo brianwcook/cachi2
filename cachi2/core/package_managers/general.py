@@ -6,6 +6,7 @@ from os import PathLike
 from pathlib import Path
 from typing import Any, Dict, Optional, Set, Union
 from urllib.parse import urlparse
+import ssl
 
 import aiohttp
 import aiohttp_retry
@@ -62,6 +63,7 @@ async def _async_download_binary_file(
     url: str,
     download_path: Union[str, PathLike[str]],
     auth: Optional[aiohttp.BasicAuth] = None,
+    ssl_context: ssl.SSLContext=None,
     chunk_size: int = 8192,
 ) -> None:
     """
@@ -81,7 +83,7 @@ async def _async_download_binary_file(
             f"aiohttp.ClientSession.get(url: {url}, timeout: {timeout}, raise_for_status: True)"
         )
          
-        async with session.get(url, timeout=timeout, auth=auth, raise_for_status=True, ssl_context=get_ssl_context()) as resp:
+        async with session.get(url, timeout=timeout, auth=auth, raise_for_status=True, ssl_context=ssl_context) as resp:
             with open(download_path, "wb") as f:
                 while True:
                     chunk = await resp.content.read(chunk_size)
@@ -102,6 +104,7 @@ async def _async_download_binary_file(
 async def async_download_files(
     files_to_download: Dict[str, Union[str, PathLike[str]]],
     concurrency_limit: int,
+    ssl_context: ssl.SSLContext=None,
 ) -> None:
     """Asynchronous function to download files.
 
@@ -148,7 +151,7 @@ async def async_download_files(
                         t.cancel()
                     raise
 
-            tasks.add(asyncio.create_task(_async_download_binary_file(session, url, download_path)))
+            tasks.add(asyncio.create_task(_async_download_binary_file(session, url, download_path, ssl_context=ssl_context)))
 
         await asyncio.gather(*tasks)
 
@@ -200,36 +203,3 @@ def extract_git_info(vcs_url: str) -> dict[str, Any]:
         "namespace": namespace,
         "repo": repo,
     }
-
-def get_client_certs():
-    import os
-    client_cert=os.getenv("C2_CLIENT_CERT")
-    client_key=os.getenv("C2_CLIENT_KEY")
-    if client_cert is None or client_key is None:
-        client_tls_auth=None
-    elif not os.path.isfile(path=client_cert) or not os.path.isfile(path=client_key) :
-        raise(FileNotFoundError)
-    else:
-        client_tls_auth = (client_cert, client_key)
-        print("adding client ssl certs.")
-    return client_tls_auth
-
-def get_ssl_context():
-    import ssl
-    import os
-    client_cert=os.getenv("C2_CLIENT_CERT")
-    client_key=os.getenv("C2_CLIENT_KEY")
-    if client_cert is None or client_key is None:
-        log.info(f"No client certificates will be used.")
-        ssl_ctx=None
-
-    elif not os.path.isfile(path=client_cert) or not os.path.isfile(path=client_key) :
-        raise(FileNotFoundError)
-    else:
-        ssl_ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-        # Load the client cert chain. This will be sent to the server
-        ssl_ctx.load_cert_chain(client_cert, client_key)
-        log.info(f"Sending client certificates.")
-        ssl_ctx.check_hostname = False
-        ssl_ctx.verify_mode = ssl.CERT_NONE
-    return ssl_ctx
