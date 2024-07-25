@@ -62,6 +62,7 @@ COPY --from=builder /venv /venv
 RUN ln -s /usr/local/lib/corepack/dist/corepack.js /usr/local/bin/corepack && \
     ln -s /usr/local/lib/corepack/dist/yarn.js /usr/local/bin/yarn && \
     ln -s /usr/local/go/go1.21/bin/go /usr/local/bin/go && \
+    ln -s /venv/bin/createrepo_c /usr/local/bin/createrepo_c && \
     ln -s /venv/bin/cachi2 /usr/local/bin/cachi2
 
 ENTRYPOINT ["/usr/local/bin/cachi2"]
