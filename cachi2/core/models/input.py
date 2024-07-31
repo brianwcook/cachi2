@@ -172,11 +172,37 @@ class PipPackageInput(_PackageInputBase):
         return paths
 
 
-class RpmPackageInput(_PackageInputBase):
-    """Accepted input for a rpm package."""
+class _SSLOptions(pydantic.BaseModel, extra="forbid"):
+    """SSL options model.
 
+    Provides the 'ssl' key under 'options' for rpm package manager.
+
+    """
+
+    client_cert: str = None
+    client_key: str = None
+    ca_bundle: str = None
+    ssl_verify: bool = None
+
+    @pydantic.model_validator(mode="before")
+    def _validate_ssl_options(cls, data: Any, info: pydantic.ValidationInfo) -> Optional[Dict]:
+
+        # todo:could move valiation from _get_ssl_context to here
+        return data
+
+
+class OptionsModel(pydantic.BaseModel):
+    """Optional inputs for RPM package manager."""
+
+    ssl: Optional[_SSLOptions] = None
+    dnf: Union[Optional[_DNFOptions]] = None
+
+
+class RpmPackageInput(_PackageInputBase):
+    """Accepted input for RPM package manager."""
+
+    options: Optional[OptionsModel] = None
     type: Literal["rpm"]
-    options: Optional[Union[_DNFOptions]] = None
 
 
 class YarnPackageInput(_PackageInputBase):

@@ -8,13 +8,15 @@ from dataclasses import dataclass
 from os import PathLike
 from pathlib import Path
 from typing import Any, Dict, Optional, Union, no_type_check
+from os import path
+import ssl
 
 import yaml
 from packageurl import PackageURL
 from pydantic import ValidationError
 
 from cachi2.core.config import get_config
-from cachi2.core.errors import PackageManagerError, PackageRejected
+from cachi2.core.errors import PackageManagerError, PackageRejected, SSLContextError
 from cachi2.core.models.input import Request
 from cachi2.core.models.output import RequestOutput
 from cachi2.core.models.sbom import Component, Property
@@ -203,8 +205,9 @@ def fetch_rpm_source(request: Request) -> RequestOutput:
     noptions = 0
 
     for package in request.rpm_packages:
+
         path = request.source_dir.join_within_root(package.path)
-        components.extend(_resolve_rpm_project(path, request.output_dir))
+        components.extend(_resolve_rpm_project(path, request.output_dir, options=package.options))
 
         # FIXME: this is only ever good enough for a PoC, but needs to be handled properly in the
         # future.
@@ -216,9 +219,15 @@ def fetch_rpm_source(request: Request) -> RequestOutput:
         # We're deliberately taking the easy route here by only assuming the "last" set of options
         # we found in the input JSON instead of doing a deep merge of all the nested dicts.
         # Nevertheless, we'll at least emit a warning at the end so that the user is informed
-        if package.options and package.options.dnf:
-            options = package.options.model_dump()
-            noptions += 1
+        try:
+            if package.options and package.options.dnf:
+                options = package.options.model_dump()
+                noptions += 1
+        except AttributeError:
+            # This is thrown when "options" is specified but there is no dnf key in it. 
+            # It needs to be allowed now since options might exist for the purpose of carrying
+            # ssl options.
+            pass
 
     if noptions > 1:
         log.warning(
@@ -235,7 +244,7 @@ def fetch_rpm_source(request: Request) -> RequestOutput:
     )
 
 
-def _resolve_rpm_project(source_dir: RootedPath, output_dir: RootedPath) -> list[Component]:
+def _resolve_rpm_project(source_dir: RootedPath, output_dir: RootedPath, options=None) -> list[Component]:
     """
     Process a request for a single RPM source directory.
 
@@ -277,14 +286,15 @@ def _resolve_rpm_project(source_dir: RootedPath, output_dir: RootedPath) -> list
             )
 
         package_dir = output_dir.join_within_root(DEFAULT_PACKAGE_DIR)
-        metadata = _download(redhat_rpms_lock, package_dir.path)
+        metadata = _download(redhat_rpms_lock, package_dir.path, options=options)
         _verify_downloaded(metadata)
 
         lockfile_relative_path = source_dir.subpath_from_root / DEFAULT_LOCKFILE_NAME
         return _generate_sbom_components(metadata, lockfile_relative_path)
 
 
-def _download(lockfile: RedhatRpmsLock, output_dir: Path) -> dict[Path, Any]:
+def _download(lockfile: RedhatRpmsLock, output_dir: Path,
+              options: Optional[Dict] = {}) -> dict[Path, Any]:
     """
     Download packages mentioned in the lockfile.
 
@@ -293,6 +303,8 @@ def _download(lockfile: RedhatRpmsLock, output_dir: Path) -> dict[Path, Any]:
     for later verification (size, checksum) after download.
     Prepare a list of files to be downloaded, and then download files.
     """
+
+    log.debug(options)
     metadata = {}
     for arch in lockfile.arches:
         log.info(f"Downloading files for '{arch.arch}' architecture.")
@@ -319,7 +331,10 @@ def _download(lockfile: RedhatRpmsLock, output_dir: Path) -> dict[Path, Any]:
             }
             Path.mkdir(dest.parent, parents=True, exist_ok=True)
 
-        asyncio.run(async_download_files(files, get_config().concurrency_limit))
+        if options is not None:
+            options = options.model_dump()
+
+        asyncio.run(async_download_files(files, get_config().concurrency_limit, ssl_context=_get_ssl_context(options)))
     return metadata
 
 
@@ -454,3 +469,69 @@ def _generate_repofiles(
 
             with open(repo_file_path, "w") as f:
                 repofile.write(f)
+
+
+def _get_ssl_context(options: dict):
+    log.info(str(options))
+    ssl_ctx = ssl.create_default_context()
+
+    try:
+        if "ssl" in options:
+            client_cert = options['ssl']['client_cert']
+            client_key = options['ssl']['client_key']
+            ca_bundle = options['ssl']['ca_bundle']
+            ssl_verify = options['ssl']['ssl_verify']
+        else:
+            log.info("returning default ssl context.")
+            return ssl_ctx
+
+    except TypeError:  # handles the condition where options is None
+        log.info("returning default ssl context.")
+        return ssl_ctx
+
+    if ((client_cert is None and client_key is not None) or (client_key is None and client_cert is not None)):
+        # todo include helpful message
+        raise SSLContextError(
+            "A required client credential parameter is missing.",
+            solution=(
+                "When using client certificates,  client_key and client_cert must both be provided."
+            ),
+        )
+
+    if client_cert is None and client_key is None:
+        log.debug("No client certificates will be used.")
+    elif path.isfile(path=client_cert) and path.isfile(path=client_key) :
+        # Load the client cert chain. This will be sent to the server
+        ssl_ctx.load_cert_chain(client_cert, client_key)
+        log.info("Using client certificate auth.")
+    else:
+        raise SSLContextError(
+            f"Specified client credentials files:\n \
+              ['{client_cert}']\n \
+              ['{client_key}']\n \
+              could not be opened.",
+            solution=(
+                "Ensure the files exist and that you have permission to the files."
+            ),
+        )
+
+    if ca_bundle is not None:
+        if path.isfile(path=ca_bundle):
+            ssl_ctx.load_verify_locations(ca_bundle)
+            log.info("Using custom CA bundle.")
+        else:
+            raise SSLContextError(
+                f"File '{ca_bundle}' could not be opened.",
+                solution=(
+                    "Ensure the file exists and that you have permissions to the file."
+                ),
+            )
+
+    #  verify_mode is for client verifying the server's cert
+    if ssl_verify is False:
+        log.info("Disabling SSL certificate and hostname verification. This is insecure and should not be used except for testing.")
+        ssl_ctx.check_hostname = False  # required for verify_mode = ssl.CERT_NONE
+        ssl_ctx.verify_mode = ssl.CERT_NONE
+
+    log.info(str(ssl_ctx))
+    return ssl_ctx

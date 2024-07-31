@@ -90,6 +90,28 @@ class TestPackageInput:
                     },
                 },
             ),
+            (
+                {
+                    "type": "rpm",
+                    "options": {
+                        "ssl": {
+                            "ssl_verify": 0
+                        }
+                    },
+                },
+                {
+                    "type": "rpm",
+                    "path": Path("."),
+                    "options": {
+                        "ssl": {
+                            "ca_bundle": None,
+                            "client_cert": None,
+                            "client_key": None,
+                            "ssl_verify": 0
+                        }
+                    },
+                },
+            ),
         ],
     )
     def test_valid_packages(self, input_data: dict[str, Any], expect_data: dict[str, Any]) -> None:
