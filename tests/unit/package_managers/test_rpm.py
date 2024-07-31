@@ -1,13 +1,15 @@
 from configparser import ConfigParser
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
-from unittest import mock
+from unittest import mock, TestCase
+from os import path
+import ssl
 
 import pytest
 import yaml
 from _pytest.logging import LogCaptureFixture
 
-from cachi2.core.errors import PackageManagerError, PackageRejected
+from cachi2.core.errors import PackageManagerError, PackageRejected, SSLContextError
 from cachi2.core.models.input import RpmPackageInput, _DNFOptions
 from cachi2.core.models.sbom import Component, Property
 from cachi2.core.package_managers.rpm import fetch_rpm_source, inject_files_post
@@ -22,6 +24,7 @@ from cachi2.core.package_managers.rpm.main import (
     _Repofile,
     _resolve_rpm_project,
     _verify_downloaded,
+    _get_ssl_context
 )
 from cachi2.core.package_managers.rpm.redhat import RedhatRpmsLock
 from cachi2.core.rooted_path import RootedPath
@@ -671,3 +674,83 @@ class TestRepofile:
             _Repofile({"foo": "bar"}).write(f)
 
         mock_apply_defaults.assert_called_once()
+
+
+class TestGetSslContext(TestCase):
+    def patched_isfile(self, path=None):
+        return path == "pass"
+
+    ssl_options = {"ssl":
+                   {"ssl_verify": True,
+                    "client_cert": None,
+                    "client_key": None,
+                    "ca_bundle": None}}
+
+    def test_base_case(self):  # no ssl options defined.
+        ssl_context = _get_ssl_context({"ssl":
+                                        {"ssl_verify": True,
+                                         "client_cert": None,
+                                         "client_key": None,
+                                         "ca_bundle": None}})
+        assert ssl_context.verify_mode is ssl.CERT_REQUIRED
+
+    def test_verify_false(self):  # SSL verify is set to false
+        ssl_options = {"ssl":
+                       {"ssl_verify": False,
+                        "client_cert": None,
+                        "client_key": None,
+                        "ca_bundle": None}}
+        ssl_context = _get_ssl_context(ssl_options)
+        assert ssl_context.verify_mode is ssl.CERT_NONE
+
+    # @mock.patch.object(ssl.SSLContext, "load_cert_chain", return_value=ssl.create_default_context())
+    def test_only_client_cert_defined(self):
+        ssl_options = {"ssl":
+                       {"ssl_verify": True,
+                        "client_cert": "pass",
+                        "client_key": None,
+                        "ca_bundle": None}}
+        self.assertRaises(SSLContextError, _get_ssl_context, ssl_options)
+
+    # @mock.patch.object(ssl.SSLContext, "load_cert_chain", return_value=ssl.create_default_context())
+    def test_only_client_key_defined(self):
+        ssl_options = {"ssl":
+                       {"ssl_verify": True,
+                        "client_cert": None,
+                        "client_key": "pass",
+                        "ca_bundle": None}}
+        self.assertRaises(SSLContextError, _get_ssl_context, ssl_options)
+
+    @mock.patch.object(ssl.SSLContext, "load_cert_chain", return_value=ssl.create_default_context())
+    @mock.patch.object(ssl.SSLContext, "load_verify_locations", return_value=None)
+    def file_not_found_conditions(self):
+        with mock.patch.object(path, 'isfile', side_effect=self.patched_isfile):
+
+            # Test for proper response when a file is specified which cannot be accessed.
+
+            options = {"ssl": {"client_cert": "fail",
+                               "client_key": "pass",
+                               "ca_bundle": "pass",
+                               "ssl_verify": True}}
+            self.assertRaises(SSLContextError, _get_ssl_context, options)
+
+            options = {"ssl": {"client_cert": "pass",
+                               "client_key": "fail",
+                               "ca_bundle": "pass",
+                               "ssl_verify": True}}
+
+            self.assertRaises(SSLContextError, _get_ssl_context, options)
+
+            options = {"ssl": {"client_cert": "pass",
+                               "client_key": "fail",
+                               "ca_bundle": "pass",
+                               "ssl_verify": True}}
+
+            self.assertRaises(SSLContextError, _get_ssl_context, options)
+
+            options = {"ssl": {"client_cert": "pass",
+                               "client_key": "pass",
+                               "ca_bundle": "fail",
+                               "ssl_verify": True}}
+
+            self.assertRaises(SSLContextError, _get_ssl_context, options)

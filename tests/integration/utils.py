@@ -306,6 +306,7 @@ def fetch_deps_and_check_output(
     source_folder: Path,
     test_data_dir: Path,
     cachi2_image: ContainerImage,
+    mounts: Sequence[tuple[StrPath, StrPath]] = ()
 ) -> Path:
     """
     Fetch dependencies for source repo and check expected output.
@@ -331,7 +332,7 @@ def fetch_deps_and_check_output(
 
     cmd.append(json.dumps(test_params.packages).encode("utf-8"))
 
-    (output, exit_code) = cachi2_image.run_cmd_on_image(cmd, tmp_path)
+    (output, exit_code) = cachi2_image.run_cmd_on_image(cmd, tmp_path, mounts)
     assert exit_code == test_params.expected_exit_code, (
         f"Fetching deps ended with unexpected exitcode: {exit_code} != "
         f"{test_params.expected_exit_code}, output-cmd: {output}"

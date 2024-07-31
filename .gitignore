@@ -126,3 +126,6 @@ tags
 # cachi2 default files
 cachi2-output/
 cachi2.env
+# docker
+**/.Dockerfile.swp
+**/Dockerfile.save

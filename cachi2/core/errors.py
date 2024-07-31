@@ -130,3 +130,21 @@ class PackageManagerError(Cachi2Error):
         The output of the failing command should provide more details, please check the logs.
         """
     ).strip()
+
+
+class SSLContextError(UsageError):
+    """
+    Something went wrong related to creating an SSL Context to be used with a remote server.
+
+    """
+
+    def __init__(self, reason: str, *, solution: Optional[str], docs: Optional[str] = None) -> None:
+        """Initialize a Package Rejected error.
+
+        Compared to the parent class, the solution param is required (but can be explicitly None).
+
+        :param reason: explain why we rejected the package
+        :param solution: politely suggest a potential solution to the user
+        :param docs: include a link to relevant documentation (if there is any)
+        """
+        super().__init__(reason, solution=solution, docs=docs)
