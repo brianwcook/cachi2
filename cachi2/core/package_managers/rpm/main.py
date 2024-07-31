@@ -7,7 +7,7 @@ from os import PathLike
 from pathlib import Path
 from typing import Any, Dict, Optional, Union, no_type_check
 from urllib.parse import quote
-import os
+from os import getenv
 import ssl
 
 import yaml
@@ -382,8 +382,11 @@ def _generate_repofiles(
                 repofile.write(f)
 
 def get_ssl_context():
-    client_cert=os.getenv("C2_CLIENT_CERT")
-    client_key=os.getenv("C2_CLIENT_KEY")
+    client_cert = getenv("C2_CLIENT_CERT")
+    client_key = getenv("C2_CLIENT_KEY")
+    verify_mode = getenv("C2_VERIFY_MODE")
+    check_hostname = getenv("C2_CHECK_HOSTNAME")
+    
     if client_cert is None or client_key is None:
         log.info(f"No client certificates will be used.")
         ssl_ctx=None
@@ -395,5 +398,13 @@ def get_ssl_context():
         ssl_ctx.load_cert_chain(client_cert, client_key)
         log.info(f"Using client certificate auth.")
         ssl_ctx.check_hostname = False
+
+    # defaults:
+    verify_mode = ssl.CERT_REQUIRED
+    check_hostname = True
+    
+    try:
+        if getenv("C2_SSL_VERIFY") is CERT_REQUIRED:
+        
         ssl_ctx.verify_mode = ssl.CERT_NONE
     return ssl_ctx
