@@ -113,7 +113,7 @@ class _DNFOptions(pydantic.BaseModel, extra="forbid"):
             _raise_unexpected_type(data, *prefixes)
 
         if "dnf" not in data:
-            raise ValueError(f"Missing required namespace attribute in '{data}': 'dnf'")
+            return data
 
         if diff := set(cls.model_fields) - set(data.keys()):
             raise ValueError(f"Extra attributes passed in '{data}': {diff}")
@@ -172,11 +172,55 @@ class PipPackageInput(_PackageInputBase):
         return paths
 
 
-class RpmPackageInput(_PackageInputBase):
-    """Accepted input for a rpm package."""
+# class _SSLContextFields(pydantic.BaseModel, extra="forbid"):
+#     """SSL options model.
 
+#     Fields for SSL options dict.
+#     client_cet: used for client TLS auth.
+#     client_key: used for client TLS auth.
+#     ca_bundle: a concatendated list of CA certificates in PEM format (sending a single cert is normal an aceptable.)
+#     ssl_verify: supress erros related to CA certificate validation. Useful for testing but insecure for production use.
+
+#     """
+
+#     client_cert: str = None
+#     client_key: str = None
+#     ca_bundle: str = None
+#     ssl_verify: bool = None
+
+
+class _SSLOptions(pydantic.BaseModel, extra="forbid"):
+    """SSL options model.
+
+    Provides the 'ssl' key under 'options' for rpm package manager.
+
+    """
+    client_cert: str = None
+    client_key: str = None
+    ca_bundle: str = None
+    ssl_verify: bool = None
+
+    @pydantic.model_validator(mode="before")
+    def _validate_ssl_options(cls, data: Any, info: pydantic.ValidationInfo) -> Optional[Dict]:
+
+        # todo:could move valiation from _get_ssl_context to here
+        return data
+
+
+class OptionsModel(pydantic.BaseModel):
+    ssl: Optional[_SSLOptions] = None
+    dnf: Union[Optional[_DNFOptions]] = None
+
+# class RpmPackageInput(_PackageInputBase):
+#     """Accepted input for a rpm package."""
+
+#
+#     options: Union[Optional[_DNFOptions], Optional[_SSLContext]] = None
+
+
+class RpmPackageInput(_PackageInputBase):
+    options: Optional[OptionsModel] = None
     type: Literal["rpm"]
-    options: Optional[Union[_DNFOptions]] = None
 
 
 class YarnPackageInput(_PackageInputBase):

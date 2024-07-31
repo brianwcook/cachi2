@@ -96,8 +96,11 @@ def test_rpm_packages(
 
     :param test_params: Test case arguments
     :param tmp_path: Temp directory for pytest
+
     """
+
     test_case = request.node.callspec.id
+    print(test_case)
 
     source_folder = utils.clone_repository(
         test_params.repo, test_params.ref, f"{test_case}-source", tmp_path
@@ -105,6 +108,55 @@ def test_rpm_packages(
 
     utils.fetch_deps_and_check_output(
         tmp_path, test_case, test_params, source_folder, test_data_dir, cachi2_image
+    )
+
+
+def test_cert_auth(cachi2_image: utils.ContainerImage,
+                   tmp_path: Path,
+                   test_data_dir: Path,
+                   request: pytest.FixtureRequest) -> None:
+
+    client_cert = "/certificates/testuser.crt"
+    client_key = "/certificates/testuser.key"
+    ca_bundle = "/certificates/myCA.crt"
+
+    print(client_cert)
+    print(client_key)
+    print(ca_bundle)
+
+    test_case = "rpm_cert_auth"""
+
+    test_params = utils.TestParameters(
+        repo="https://github.com/brianwcook/cachi2-rpm-cert-auth",
+        ref="main",
+        packages=(
+            {
+                "path": ".",
+                "type": "rpm",
+                "options": {
+                    "ssl": {
+                        "client_cert": client_cert,
+                        "client_key": client_key,
+                        "ca_bundle": ca_bundle,
+                    }
+                },
+            }
+        ),
+        flags=["--dev-package-managers"],
+        check_output=True,
+        check_deps_checksums=False,
+        check_vendor_checksums=False,
+        expected_exit_code=0,
+    )
+
+    source_folder = utils.clone_repository(
+        "https://github.com/brianwcook/cachi2-rpm-cert-auth"
+        , "main", f"{test_case}-source", tmp_path
+    )
+
+    utils.fetch_deps_and_check_output(
+        tmp_path, test_case, test_params, source_folder, test_data_dir, cachi2_image,
+        mounts=[(os.getcwd() + "/" + "tests/dnfserver/container/certificates", "/certificates")]
     )
 
 
