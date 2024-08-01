@@ -384,7 +384,7 @@ def _generate_repofiles(
 def _get_ssl_context():
     client_cert = getenv("C2_CLIENT_CERT")
     client_key = getenv("C2_CLIENT_KEY")
-    
+    ca_bundle = getenv("C2_CA_BUNDLE")
 
     if client_cert is None or client_key is None:
         log.info(f"No client certificates will be used.")
@@ -396,6 +396,11 @@ def _get_ssl_context():
         # Load the client cert chain. This will be sent to the server
         ssl_ctx.load_cert_chain(client_cert, client_key)
         log.info(f"Using client certificate auth.")
+
+    if ca_bundle is not None:
+        if path.isfile(path=ca_bundle):
+            ssl_ctx.load_verify_locations("/etc/ssl/certs/ca-bundle.crt")
+            log.info(f"Using custom CA bundle.")
 
     # verify_mode is for client verifying the servers cert
     # options:
