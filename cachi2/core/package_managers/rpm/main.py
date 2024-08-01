@@ -397,14 +397,18 @@ def get_ssl_context():
         # Load the client cert chain. This will be sent to the server
         ssl_ctx.load_cert_chain(client_cert, client_key)
         log.info(f"Using client certificate auth.")
-        ssl_ctx.check_hostname = False
 
-    # defaults:
-    verify_mode = ssl.CERT_REQUIRED
-    check_hostname = True
+    # verify_mode is for client verifying the servers cert
+    # options:
+    # ssl_ctx.verify_mode = ssl.CERT_REQUIRED  - default
+    # ssl_ctx.verify_mode = ssl.CERT_NONE - allow self signed or expired certs
     
-    try:
-        if getenv("C2_SSL_VERIFY") is CERT_REQUIRED:
-        
+    ssl_cerify = getenv("C2_SSL_VERIFY", "CERT_REQUIRED")
+    if ssl_cerify.lower() is "false":
         ssl_ctx.verify_mode = ssl.CERT_NONE
+    
+    check_hostname = getenv("C2_VERIFY_HOSTNAME", True)
+    if check_hostname.lower() is "false":
+        ssl_ctx.check_hostname = False
+    
     return ssl_ctx
