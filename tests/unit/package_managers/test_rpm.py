@@ -643,21 +643,26 @@ def test_get_ssl_context():
     import ssl 
     ssl_context = ssl.create_default_context()
     
-    # case 1
-    # mock.patch.dict(environ, ssl_cerify="false", check_hostname="false")
-    mock.path.dict(environ, {}, clear=True)
-    ssl_context = _get_ssl_context()
-    assert ssl_context.check_hostname is True
-    assert ssl_context.verify_mode is ssl.CERT_REQUIRED
+    # case 1: no environ var defined
+    test_env = mock.patch.dict(environ, {}, clear=True)
+    with test_env:
+        ssl_context = _get_ssl_context()
+        assert ssl_context.verify_mode is ssl.CERT_REQUIRED
 
-     # case 2
-    mock.patch.dict(environ, ssl_cerify="true", check_hostname="true")
-    ssl_context = _get_ssl_context()
-    assert ssl_context.check_hostname is True
-    assert ssl_context.verify_mode is ssl.CERT_REQUIRED
+     # case 2: environ var defined to a value we don't use
+    test_env =  mock.patch.dict(environ, C2_SSL_VERIFY="true")
+    with test_env:
+        ssl_context = _get_ssl_context()
+        assert ssl_context.verify_mode is ssl.CERT_REQUIRED
 
-    # case 3
-    mock.patch.dict(environ, ssl_verify="false", check_hostname="false")
-    ssl_context = _get_ssl_context()
-    assert ssl_context.check_hostname is False
-    assert ssl_context.verify_mode is ssl.CERT_NONE
+    # case 3: environ var defined in lower case = valid
+    test_env =  mock.patch.dict(environ, C2_SSL_VERIFY="false")
+    with test_env:
+        ssl_context = _get_ssl_context()
+        assert ssl_context.verify_mode is ssl.CERT_NONE
+    
+    # case 4: environ var defined in uppercase, also valid.
+    test_env =  mock.patch.dict(environ, C2_SSL_VERIFY="FALSE")
+    with test_env:
+        ssl_context = _get_ssl_context()
+        assert ssl_context.verify_mode is ssl.CERT_NONE

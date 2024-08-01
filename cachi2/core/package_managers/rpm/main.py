@@ -405,11 +405,7 @@ def _get_ssl_context():
     ssl_cerify = getenv("C2_SSL_VERIFY", "CERT_REQUIRED")
     if ssl_cerify.lower() == "false":
         log.info(f"Disabling SSL certificate verification. This is insecure and should not be used except for testing.")
+        ssl_ctx.check_hostname = False # required for verify_mode = ssl.CERT_NONE
         ssl_ctx.verify_mode = ssl.CERT_NONE
-       
-    check_hostname = getenv("C2_VERIFY_HOSTNAME", True)
-    if check_hostname.lower() == "false":
-        log.info(f"Disabling SSL certificate hostname verification. This is insecure and should not be used except for testing.")
-        ssl_ctx.check_hostname = False
 
     return ssl_ctx
