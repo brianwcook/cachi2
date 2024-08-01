@@ -23,6 +23,7 @@ from cachi2.core.package_managers.rpm.main import (
     _Repofile,
     _resolve_rpm_project,
     _verify_downloaded,
+    _get_ssl_context
 )
 from cachi2.core.package_managers.rpm.redhat import RedhatRpmsLock
 from cachi2.core.rooted_path import RootedPath

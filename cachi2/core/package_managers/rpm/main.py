@@ -7,7 +7,7 @@ from os import PathLike
 from pathlib import Path
 from typing import Any, Dict, Optional, Union, no_type_check
 from urllib.parse import quote
-from os import getenv
+from os import getenv, path
 import ssl
 
 import yaml
@@ -197,7 +197,7 @@ def _download(lockfile: RedhatRpmsLock, output_dir: Path) -> dict[Path, Any]:
             }
             Path.mkdir(dest.parent, parents=True, exist_ok=True)
 
-        asyncio.run(async_download_files(files, get_config().concurrency_limit, ssl_context=get_ssl_context()))
+        asyncio.run(async_download_files(files, get_config().concurrency_limit, ssl_context=_get_ssl_context()))
     return metadata
 
 
@@ -381,16 +381,15 @@ def _generate_repofiles(
             with open(repo_file_path, "w") as f:
                 repofile.write(f)
 
-def get_ssl_context():
+def _get_ssl_context():
     client_cert = getenv("C2_CLIENT_CERT")
     client_key = getenv("C2_CLIENT_KEY")
-    verify_mode = getenv("C2_VERIFY_MODE")
-    check_hostname = getenv("C2_CHECK_HOSTNAME")
     
+
     if client_cert is None or client_key is None:
         log.info(f"No client certificates will be used.")
-        ssl_ctx=None
-    elif not os.path.isfile(path=client_cert) or not os.path.isfile(path=client_key) :
+        ssl_ctx = ssl.create_default_context()
+    elif not path.isfile(path=client_cert) or not path.isfile(path=client_key) :
         raise(FileNotFoundError)
     else:
         ssl_ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
@@ -404,11 +403,13 @@ def get_ssl_context():
     # ssl_ctx.verify_mode = ssl.CERT_NONE - allow self signed or expired certs
     
     ssl_cerify = getenv("C2_SSL_VERIFY", "CERT_REQUIRED")
-    if ssl_cerify.lower() is "false":
+    if ssl_cerify.lower() == "false":
+        log.info(f"Disabling SSL certificate verification. This is insecure and should not be used except for testing.")
         ssl_ctx.verify_mode = ssl.CERT_NONE
-    
+       
     check_hostname = getenv("C2_VERIFY_HOSTNAME", True)
-    if check_hostname.lower() is "false":
+    if check_hostname.lower() == "false":
+        log.info(f"Disabling SSL certificate hostname verification. This is insecure and should not be used except for testing.")
         ssl_ctx.check_hostname = False
-    
+
     return ssl_ctx
