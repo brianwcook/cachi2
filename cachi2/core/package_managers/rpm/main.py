@@ -159,7 +159,7 @@ def _resolve_rpm_project(source_dir: RootedPath, output_dir: RootedPath) -> list
         return _generate_sbom_components(metadata, lockfile_relative_path)
 
 
-def _download(lockfile: RedhatRpmsLock, output_dir: Path) -> dict[Path, Any]:
+def _download(lockfile: RedhatRpmsLock, output_dir: Path, options: Optional[Dict] = {} ) -> dict[Path, Any] :
     """
     Download packages mentioned in the lockfile.
 
@@ -168,8 +168,12 @@ def _download(lockfile: RedhatRpmsLock, output_dir: Path) -> dict[Path, Any]:
     for later verification (size, checksum) after download.
     Prepare a list of files to be downloaded, and then download files.
     """
+
+    arches = []
+    arches = options.get("rpm", {}).get("arches", lockfile.arches)
+
     metadata = {}
-    for arch in lockfile.arches:
+    for arch in arches:
         log.info(f"Downloading files for '{arch.arch}' architecture.")
         # files per URL for downloading packages & sources
         files: dict[str, Union[str, PathLike[str]]] = {}
