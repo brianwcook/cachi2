@@ -166,12 +166,32 @@ class PipPackageInput(_PackageInputBase):
         return paths
 
 
+
+_archOptions = Literal["x86_64", "aarch64", "ppcle64", "s390x"] 
+class _RpmOptions(pydantic.BaseModel, extra="forbid"):
+    """Arches options model.
+
+    should put a literal here eventually that is an enum of allowed arch
+    for now use str
+
+    """
+    arches: Optional[List[_archOptions]] = None
+    dnf: Optional[Union[_DNFOptions]] = None
+
+# todo: should this have a _ ? should it be capitalizd?
+
+
+
+
 class RpmPackageInput(_PackageInputBase):
     """Accepted input for a rpm package."""
 
     type: Literal["rpm"]
-    options: Optional[Union[_DNFOptions]] = None
+    options: Optional[Union[_RpmOptions]] = None
+    
 
+    # arches: Optional[List[_archOptions]] = None
+    # options: Optional[Union[_DNFOptions]] = None
 
 class YarnPackageInput(_PackageInputBase):
     """Accepted input for a yarn package."""

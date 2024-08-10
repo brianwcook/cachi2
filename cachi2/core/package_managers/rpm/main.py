@@ -75,11 +75,15 @@ def fetch_rpm_source(request: Request) -> RequestOutput:
     """Process all the rpm source directories in a request."""
     components: list[Component] = []
     options: Dict[str, Any] = {}
-    noptions = 0
+    noptions = 0    
+
+
+    
 
     for package in request.rpm_packages:
+
         path = request.source_dir.join_within_root(package.path)
-        components.extend(_resolve_rpm_project(path, request.output_dir))
+        components.extend(_resolve_rpm_project(path, request.output_dir, options=package.options))
 
         # FIXME: this is only ever good enough for a PoC, but needs to be handled properly in the
         # future.
@@ -101,7 +105,7 @@ def fetch_rpm_source(request: Request) -> RequestOutput:
             "Only one input RPM project package can specify extra DNF options, "
             "the last one seen will take effect"
         )
-
+    
     return RequestOutput.from_obj_list(
         components=components,
         environment_variables=[],
@@ -110,12 +114,13 @@ def fetch_rpm_source(request: Request) -> RequestOutput:
     )
 
 
-def _resolve_rpm_project(source_dir: RootedPath, output_dir: RootedPath) -> list[Component]:
+def _resolve_rpm_project(source_dir: RootedPath, output_dir: RootedPath, options=None) -> list[Component]:
     """
     Process a request for a single RPM source directory.
 
     Process the input lockfile, fetch packages and generate SBOM.
     """
+
     # Check the availability of the input lockfile.
     if not source_dir.join_within_root(DEFAULT_LOCKFILE_NAME).path.exists():
         raise PackageRejected(
@@ -152,14 +157,16 @@ def _resolve_rpm_project(source_dir: RootedPath, output_dir: RootedPath) -> list
             )
 
         package_dir = output_dir.join_within_root(DEFAULT_PACKAGE_DIR)
-        metadata = _download(redhat_rpms_lock, package_dir.path)
+        
+        metadata = _download(redhat_rpms_lock, package_dir.path, options=options)
         _verify_downloaded(metadata)
 
         lockfile_relative_path = source_dir.subpath_from_root / DEFAULT_LOCKFILE_NAME
         return _generate_sbom_components(metadata, lockfile_relative_path)
 
 
-def _download(lockfile: RedhatRpmsLock, output_dir: Path, options: Optional[Dict] = {} ) -> dict[Path, Any] :
+def _download(lockfile: RedhatRpmsLock, output_dir: Path, 
+              options: Optional[Dict] = {})-> dict[Path, Any]:
     """
     Download packages mentioned in the lockfile.
 
@@ -169,11 +176,14 @@ def _download(lockfile: RedhatRpmsLock, output_dir: Path, options: Optional[Dict
     Prepare a list of files to be downloaded, and then download files.
     """
 
-    arches = []
-    arches = options.get("rpm", {}).get("arches", lockfile.arches)
-
     metadata = {}
-    for arch in arches:
+    for arch in lockfile.arches:
+        if options.arches is not None:
+            if arch.arch not in options.arches:
+                print(arch.arch)
+                log.info(F"Skipping '{arch.arch}'")
+                continue
+
         log.info(f"Downloading files for '{arch.arch}' architecture.")
         # files per URL for downloading packages & sources
         files: dict[str, Union[str, PathLike[str]]] = {}
