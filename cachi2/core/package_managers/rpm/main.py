@@ -175,14 +175,18 @@ def _download(lockfile: RedhatRpmsLock, output_dir: Path,
     for later verification (size, checksum) after download.
     Prepare a list of files to be downloaded, and then download files.
     """
-
+    
+    
     metadata = {}
     for arch in lockfile.arches:
-        if options.arches is not None:
+        try:
             if arch.arch not in options.arches:
                 print(arch.arch)
                 log.info(F"Skipping '{arch.arch}'")
                 continue
+        except AttributeError:
+            # if we hit this is just meeans there are no arches to filter
+            pass    
 
         log.info(f"Downloading files for '{arch.arch}' architecture.")
         # files per URL for downloading packages & sources
