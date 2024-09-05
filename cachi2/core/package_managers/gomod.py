@@ -3,7 +3,7 @@ import logging
 import os
 import re
 import shutil
-import subprocess  # nosec
+import subprocess
 import tempfile
 from datetime import datetime
 from functools import cached_property
@@ -35,7 +35,13 @@ if TYPE_CHECKING:
     from typing_extensions import Self
 
 from cachi2.core.config import get_config
-from cachi2.core.errors import FetchError, PackageManagerError, PackageRejected, UnexpectedFormat
+from cachi2.core.errors import (
+    FetchError,
+    PackageManagerError,
+    PackageRejected,
+    UnexpectedFormat,
+    UnsupportedFeature,
+)
 from cachi2.core.models.input import Request
 from cachi2.core.models.output import EnvironmentVariable, RequestOutput
 from cachi2.core.models.property_semantics import PropertySet
@@ -758,9 +764,10 @@ def _find_missing_gomod_files(source_path: RootedPath, subpaths: list[str]) -> l
 
 
 def _setup_go_toolchain(go_mod_file: RootedPath) -> Go:
+    GO_121 = version.Version("1.21")
     go = Go()
     target_version = None
-    go_max_version = version.Version("1.21")
+    go_max_version = version.Version("1.22")
     go_base_version = go.version
     go_mod_version_msg = "go.mod reported versions: '%s'[go], '%s'[toolchain]"
 
@@ -799,13 +806,13 @@ def _setup_go_toolchain(go_mod_file: RootedPath) -> Go:
             ),
         )
 
-    if target_version >= go_max_version:
+    if target_version >= GO_121:
         # Project makes use of Go >=1.21:
         # - always use the 'X.Y.0' toolchain to make sure GOTOOLCHAIN=auto fetches anything newer
         # - container environments need to have it pre-installed
         # - local environments will always install 1.21.0 SDK and then pull any newer toolchain
         go = Go(release="go1.21.0")
-    elif go_base_version >= go_max_version:
+    elif go_base_version >= GO_121:
         # Starting with Go 1.21, Go doesn't try to be semantically backwards compatible in that the
         # 'go X.Y' line now denotes the minimum required version of Go, no a "suggested" version.
         # What it means in practice is that a Go toolchain >= 1.21 enforces the biggest common
@@ -875,6 +882,12 @@ def _resolve_gomod(
         flags, app_dir, config.gomod_strict_vendor
     )
     if should_vendor:
+        if go_work_path and go_work_path.join_within_root("vendor").path.is_dir():
+            # NOTE: the same error will be reported even for 1.21 which doesn't support workspace
+            # vendoring, but given it's an invalid configuration and that we plan full 1.22 support
+            # in the foreseeable future, a not so user friendly error should be fine
+            raise UnsupportedFeature("Go workspace vendoring is not supported")
+
         downloaded_modules = _vendor_deps(go, app_dir, can_make_changes, run_params)
     else:
         log.info("Downloading the gomod dependencies")
@@ -1011,7 +1024,7 @@ def _get_go_work_path(app_dir: RootedPath) -> Optional[RootedPath]:
     go = Go()
     go_work_file = go(["env", "GOWORK"], {"cwd": app_dir}).rstrip()
 
-    if not go_work_file:
+    if not go_work_file or go_work_file == "off":
         return None
 
     go_work_path = Path(go_work_file).parent

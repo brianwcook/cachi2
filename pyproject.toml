@@ -31,12 +31,11 @@ dependencies = [
   "pydantic",
   "pypi-simple",
   "pyyaml",
-  "reflink",
   "requests",
   "semver",
-  "setuptools",
   "tomli",
   "typer",
+  "createrepo-c",
 ]
 [project.optional-dependencies]
 dev = [
@@ -75,14 +74,11 @@ profile = "black"
 line_length = 100
 
 [tool.mypy]
+python_version = "3.9"
 plugins = ["pydantic.mypy"]
 disallow_untyped_defs = true
 disallow_incomplete_defs = true
 disallow_untyped_decorators = true
-
-[[tool.mypy.overrides]]
-module = ["semver"]
-ignore_missing_imports = true
 
 [tool.coverage.report]
 skip_covered = true
@@ -93,4 +89,10 @@ exclude_lines = [
   "if __name__ == .__main__.:",
   "if TYPE_CHECKING:",
   "return NotImplemented",
+]
+
+[tool.bandit]
+skips = [
+  "B404", # import subprocess
+  "B603", # subprocess_without_shell_equals_true
 ]

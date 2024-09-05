@@ -1,18 +1,22 @@
 import asyncio
 import hashlib
+import itertools
 import logging
 import shlex
 from configparser import ConfigParser
+from dataclasses import dataclass
 from os import PathLike
 from pathlib import Path
 from typing import Any, Dict, Optional, Union, no_type_check
-from urllib.parse import quote
+from os import path
+import ssl
 
 import yaml
+from packageurl import PackageURL
 from pydantic import ValidationError
 
 from cachi2.core.config import get_config
-from cachi2.core.errors import PackageManagerError, PackageRejected
+from cachi2.core.errors import PackageManagerError, PackageRejected, SSLContextError
 from cachi2.core.models.input import Request
 from cachi2.core.models.output import RequestOutput
 from cachi2.core.models.sbom import Component, Property
@@ -29,6 +33,129 @@ DEFAULT_PACKAGE_DIR = "deps/rpm"
 
 # during the computing of file checksum read chunk of size 1 MB
 READ_CHUNK = 1048576
+
+
+@dataclass
+class Package:
+    """An RPM package with relevant data for the SBOM generation."""
+
+    name: str
+    version: str
+    release: str
+    arch: str
+    download_url: str
+    epoch: Optional[str] = None
+    vendor: Optional[str] = None
+    checksum: Optional[str] = None
+    repository_id: Optional[str] = None
+
+    @classmethod
+    def from_filepath(cls, rpm_filepath: Path, rpm_download_metadata: dict[str, Any]) -> "Package":
+        """Instantiate a package dataclass instance from a download RPM file path."""
+        kwargs: dict[str, Optional[str]] = {}
+        kwargs.update(cls._query_rpm_fields(rpm_filepath))
+
+        repoid = rpm_download_metadata.get("repoid")
+        is_srpm = rpm_filepath.name.endswith("src.rpm")
+
+        if is_srpm:
+            # Red Hat PURL RPM guideline suggests injecting 'src' into the arch qualifier for SRPMS
+            kwargs["arch"] = "src"
+
+        kwargs["repository_id"] = repoid if repoid and not repoid.startswith("cachi2") else None
+        kwargs["download_url"] = rpm_download_metadata["url"]
+        kwargs["checksum"] = rpm_download_metadata.get("checksum")
+
+        # Disable mypy here:
+        # - the required fields here correspond with mandatory RPM tags, so they won't be None
+        # - download_url isn't an RPM tag, but it's non-null value is guarded by a pydantic model
+        package = cls(**kwargs)  # type: ignore
+        log.debug("RPM package attributes for '%s': %s", rpm_filepath, package)
+        return package
+
+    @staticmethod
+    def _query_rpm_fields(file_path: Path) -> dict[str, str]:
+        """Query a set of RPM tags.
+
+        Tags which are optional and not set won't be returned in the resulting dict.
+        """
+        ret = {}
+        query_format = (
+            # all nvra macros should be present/mandatory in RPM
+            "name=%{NAME}\n"
+            "version=%{VERSION}\n"
+            "release=%{RELEASE}\n"
+            "arch=%{ARCH}\n"
+            # vendor and epoch are optional RPM tags; return "" if not set instead of "(None)"
+            "vendor=%|VENDOR?{%{VENDOR}}:{}|\n"
+            "epoch=%|EPOCH?{%{EPOCH}}:{}|\n"
+        )
+        rpm_args = [
+            "-q",
+            "--queryformat",
+            query_format.strip(),
+            str(file_path),
+        ]
+        rpm_fields = run_cmd(cmd=["rpm", *rpm_args], params={})
+        for entry in rpm_fields.split("\n"):
+            key, value = entry.partition("=")[::2]
+            if not value:
+                continue
+            ret[key] = value
+
+        return ret
+
+    @property
+    def purl(self) -> str:
+        """Get the purl for this package."""
+        # TODO: get rid of these mappings the moment the upstream PURL spec provides clear
+        # guidelines where does the namespace value come from, i.e. not the VENDOR RPM header tag
+        vendor_namespace_mapping = {
+            "Red Hat": "redhat",  # common Vendor string 'Red Hat Inc.'
+            "Fedora": "fedora",  # common Vendor string: Fedora Project, Fedora Copr - group @XYZ
+            "SUSE": "suse",  # common Vendor string: SUSE LLC <https://www.suse.com/>
+        }
+
+        qualifier_fields = [
+            ("epoch", self.epoch),
+            ("arch", self.arch),
+            ("repository_id", self.repository_id),
+            ("checksum", self.checksum),
+            ("download_url", None if self.repository_id else self.download_url),
+        ]
+        qualifiers: dict[str, str] = {k: v for k, v in qualifier_fields if v is not None}
+
+        # VENDOR tag is optional (under Informative package tags) [1]
+        # [1] https://rpm-software-management.github.io/rpm/manual/tags.html
+        if self.vendor is None:
+            namespace = ""
+        else:
+            for mapping, namespc in vendor_namespace_mapping.items():
+                if mapping in self.vendor:
+                    namespace = namespc
+                    break
+            else:
+                # vendor string not recognized, normalize it in a very basic, best effort manner
+                namespace = self.vendor.lower().replace(" ", "_")
+                log.debug("Normalized unknown namespace '%s' -> '%s'", self.vendor, namespace)
+
+        return PackageURL(
+            type="rpm",
+            name=self.name,
+            namespace=namespace,
+            version=f"{self.version}-{self.release}",
+            qualifiers=qualifiers,
+        ).to_string()
+
+    def to_component(self, lockfile_path: Path) -> Component:
+        """Create an SBOM component for this package."""
+        properties = []
+        if not self.checksum:
+            properties = [Property(name="cachi2:missing_hash:in_file", value=str(lockfile_path))]
+
+        return Component(
+            name=self.name, version=self.version, purl=self.purl, properties=properties
+        )
 
 
 class _Repofile(ConfigParser):
@@ -78,8 +205,9 @@ def fetch_rpm_source(request: Request) -> RequestOutput:
     noptions = 0
 
     for package in request.rpm_packages:
+
         path = request.source_dir.join_within_root(package.path)
-        components.extend(_resolve_rpm_project(path, request.output_dir))
+        components.extend(_resolve_rpm_project(path, request.output_dir, options=package.options))
 
         # FIXME: this is only ever good enough for a PoC, but needs to be handled properly in the
         # future.
@@ -91,9 +219,12 @@ def fetch_rpm_source(request: Request) -> RequestOutput:
         # We're deliberately taking the easy route here by only assuming the "last" set of options
         # we found in the input JSON instead of doing a deep merge of all the nested dicts.
         # Nevertheless, we'll at least emit a warning at the end so that the user is informed
-        if package.options and package.options.dnf:
-            options = package.options.model_dump()
-            noptions += 1
+        try:
+            if package.options and package.options.dnf:
+                options = package.options.model_dump()
+                noptions += 1
+        except AttributeError:  # This is thrown when "options" is specified but there is no dnf key in it.
+            pass
 
     if noptions > 1:
         log.warning(
@@ -110,7 +241,7 @@ def fetch_rpm_source(request: Request) -> RequestOutput:
     )
 
 
-def _resolve_rpm_project(source_dir: RootedPath, output_dir: RootedPath) -> list[Component]:
+def _resolve_rpm_project(source_dir: RootedPath, output_dir: RootedPath, options=None) -> list[Component]:
     """
     Process a request for a single RPM source directory.
 
@@ -152,14 +283,15 @@ def _resolve_rpm_project(source_dir: RootedPath, output_dir: RootedPath) -> list
             )
 
         package_dir = output_dir.join_within_root(DEFAULT_PACKAGE_DIR)
-        metadata = _download(redhat_rpms_lock, package_dir.path)
+        metadata = _download(redhat_rpms_lock, package_dir.path, options=options)
         _verify_downloaded(metadata)
 
         lockfile_relative_path = source_dir.subpath_from_root / DEFAULT_LOCKFILE_NAME
         return _generate_sbom_components(metadata, lockfile_relative_path)
 
 
-def _download(lockfile: RedhatRpmsLock, output_dir: Path) -> dict[Path, Any]:
+def _download(lockfile: RedhatRpmsLock, output_dir: Path,
+              options: Optional[Dict] = {}) -> dict[Path, Any]:
     """
     Download packages mentioned in the lockfile.
 
@@ -168,34 +300,38 @@ def _download(lockfile: RedhatRpmsLock, output_dir: Path) -> dict[Path, Any]:
     for later verification (size, checksum) after download.
     Prepare a list of files to be downloaded, and then download files.
     """
+
+    log.debug(options)
     metadata = {}
     for arch in lockfile.arches:
         log.info(f"Downloading files for '{arch.arch}' architecture.")
         # files per URL for downloading packages & sources
         files: dict[str, Union[str, PathLike[str]]] = {}
-        for pkg in arch.packages:
-            repoid = lockfile.internal_repoid if pkg.repoid is None else pkg.repoid
+        rpm_iterator = zip(itertools.repeat("rpm"), arch.packages)
+        srpm_iterator = zip(itertools.repeat("srpm"), arch.source)
+
+        for tag, pkg in itertools.chain(rpm_iterator, srpm_iterator):
+            repoid = pkg.repoid
+            if not repoid:
+                if tag == "rpm":
+                    repoid = lockfile.cachi2_repoid
+                else:
+                    repoid = lockfile.cachi2_source_repoid
+
             dest = output_dir.joinpath(arch.arch, repoid, Path(pkg.url).name)
             files[pkg.url] = str(dest)
             metadata[dest] = {
+                "repoid": pkg.repoid,
                 "url": pkg.url,
                 "size": pkg.size,
                 "checksum": pkg.checksum,
             }
             Path.mkdir(dest.parent, parents=True, exist_ok=True)
 
-        for pkg in arch.source:
-            repoid = lockfile.internal_source_repoid if pkg.repoid is None else pkg.repoid
-            dest = output_dir.joinpath(arch.arch, repoid, Path(pkg.url).name)
-            files[pkg.url] = str(dest)
-            metadata[dest] = {
-                "url": pkg.url,
-                "size": pkg.size,
-                "checksum": pkg.checksum,
-            }
-            Path.mkdir(dest.parent, parents=True, exist_ok=True)
+        if options is not None:
+            options = options.model_dump()
 
-        asyncio.run(async_download_files(files, get_config().concurrency_limit))
+        asyncio.run(async_download_files(files, get_config().concurrency_limit, ssl_context=_get_ssl_context(options)))
     return metadata
 
 
@@ -238,58 +374,10 @@ def _verify_downloaded(metadata: dict[Path, Any]) -> None:
 def _generate_sbom_components(
     files_metadata: dict[Path, Any], lockfile_path: Path
 ) -> list[Component]:
-    """Fill the component list with the package records."""
-    components: list[Component] = []
+    components = []
     for file_path, file_metadata in files_metadata.items():
-        query_format = (
-            # all nvra macros should be present/mandatory in RPM
-            "%{NAME}\n"
-            "%{VERSION}\n"
-            "%{RELEASE}\n"
-            "%{ARCH}\n"
-            # vendor and epoch are optional in RPM file and in PURL as well
-            # return "" when vendor is not set instead of "(None)"
-            "%|VENDOR?{%{VENDOR}}:{}|\n"
-            # return "" when epoch is not set instead of "(None)"
-            "%|EPOCH?{%{EPOCH}}:{}|\n"
-        )
-        rpm_args = [
-            "-q",
-            "--queryformat",
-            query_format.strip(),
-            str(file_path),
-        ]
-        rpm_fields = run_cmd(cmd=["rpm", *rpm_args], params={})
-        name, version, release, arch, vendor, epoch = rpm_fields.split("\n")
-        log.debug(
-            f"RPM attributes for '{file_path}': name='{name}', version='{version}', "
-            f"release='{release}', arch='{arch}', vendor='{vendor}', epoch='{epoch}'"
-        )
-
-        # sanitize RPM attributes (including replacing whitespaces)
-        vendor = quote(vendor.lower())
-        download_url = quote(file_metadata["url"])
-
-        # https://github.com/package-url/purl-spec/blob/master/PURL-TYPES.rst#rpm
-        # https://github.com/package-url/purl-spec/blob/master/PURL-SPECIFICATION.rst#known-qualifiers-keyvalue-pairsa
-        purl = (
-            f"pkg:rpm{'/' if vendor else ''}{vendor}/{name}@{version}-{release}"
-            f"?arch={arch}{'&epoch=' if epoch else ''}{epoch}&download_url={download_url}"
-        )
-
-        if file_metadata["checksum"] is None:
-            properties = [Property(name="cachi2:missing_hash:in_file", value=str(lockfile_path))]
-        else:
-            properties = []
-
-        components.append(
-            Component(
-                name=name,
-                version=version,
-                purl=purl,
-                properties=properties,
-            )
-        )
+        package = Package.from_filepath(file_path, file_metadata)
+        components.append(package.to_component(lockfile_path))
     return components
 
 
@@ -378,3 +466,69 @@ def _generate_repofiles(
 
             with open(repo_file_path, "w") as f:
                 repofile.write(f)
+
+
+def _get_ssl_context(options: dict):
+    log.info(str(options))
+    ssl_ctx = ssl.create_default_context()
+
+    try:
+        if "ssl" in options:
+            client_cert = options['ssl']['client_cert']
+            client_key = options['ssl']['client_key']
+            ca_bundle = options['ssl']['ca_bundle']
+            ssl_verify = options['ssl']['ssl_verify']
+        else:
+            log.info("returning default ssl context.")
+            return ssl_ctx
+
+    except TypeError:  # handles the condition where options is None
+        log.info("returning default ssl context.")
+        return ssl_ctx
+
+    if ((client_cert is None and client_key is not None) or (client_key is None and client_cert is not None)):
+        # todo include helpful message
+        raise SSLContextError(
+            "A required client credential parameter is missing.",
+            solution=(
+                "When using client certificates,  client_key and client_cert must both be provided."
+            ),
+        )
+
+    if client_cert is None and client_key is None:
+        log.debug("No client certificates will be used.")
+    elif path.isfile(path=client_cert) and path.isfile(path=client_key) :
+        # Load the client cert chain. This will be sent to the server
+        ssl_ctx.load_cert_chain(client_cert, client_key)
+        log.info("Using client certificate auth.")
+    else:
+        raise SSLContextError(
+            f"Specified client credentials files:\n \
+              ['{client_cert}']\n \
+              ['{client_key}']\n \
+              could not be opened.",
+            solution=(
+                "Ensure the files exist and that you have permission to the files."
+            ),
+        )
+
+    if ca_bundle is not None:
+        if path.isfile(path=ca_bundle):
+            ssl_ctx.load_verify_locations(ca_bundle)
+            log.info("Using custom CA bundle.")
+        else:
+            raise SSLContextError(
+                f"File '{ca_bundle}' could not be opened.",
+                solution=(
+                    "Ensure the file exists and that you have permissions to the file."
+                ),
+            )
+
+    #  verify_mode is for client verifying the server's cert
+    if ssl_verify is False:
+        log.info("Disabling SSL certificate and hostname verification. This is insecure and should not be used except for testing.")
+        ssl_ctx.check_hostname = False  # required for verify_mode = ssl.CERT_NONE
+        ssl_ctx.verify_mode = ssl.CERT_NONE
+
+    log.info(str(ssl_ctx))
+    return ssl_ctx

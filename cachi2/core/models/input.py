@@ -59,7 +59,7 @@ def _present_user_input_error(validation_error: pydantic.ValidationError) -> str
 
 
 # Supported package managers
-PackageManagerType = Literal["gomod", "npm", "pip", "rpm", "yarn"]
+PackageManagerType = Literal["bundler", "gomod", "npm", "pip", "rpm", "yarn"]
 
 Flag = Literal[
     "cgo-disable", "dev-package-managers", "force-gomod-tidy", "gomod-vendor", "gomod-vendor-check"
@@ -113,7 +113,7 @@ class _DNFOptions(pydantic.BaseModel, extra="forbid"):
             _raise_unexpected_type(data, *prefixes)
 
         if "dnf" not in data:
-            raise ValueError(f"Missing required namespace attribute in '{data}': 'dnf'")
+            return data
 
         if diff := set(cls.model_fields) - set(data.keys()):
             raise ValueError(f"Extra attributes passed in '{data}': {diff}")
@@ -129,6 +129,12 @@ class _DNFOptions(pydantic.BaseModel, extra="forbid"):
                 _raise_unexpected_type(repo_options, *prefixes)
 
         return data
+
+
+class BundlerPackageInput(_PackageInputBase):
+    """Accepted input for a bundler package."""
+
+    type: Literal["bundler"]
 
 
 class GomodPackageInput(_PackageInputBase):
@@ -166,11 +172,32 @@ class PipPackageInput(_PackageInputBase):
         return paths
 
 
-class RpmPackageInput(_PackageInputBase):
-    """Accepted input for a rpm package."""
+class _SSLOptions(pydantic.BaseModel, extra="forbid"):
+    """SSL options model.
 
+    Provides the 'ssl' key under 'options' for rpm package manager.
+
+    """
+    client_cert: str = None
+    client_key: str = None
+    ca_bundle: str = None
+    ssl_verify: bool = None
+
+    @pydantic.model_validator(mode="before")
+    def _validate_ssl_options(cls, data: Any, info: pydantic.ValidationInfo) -> Optional[Dict]:
+
+        # todo:could move valiation from _get_ssl_context to here
+        return data
+
+
+class OptionsModel(pydantic.BaseModel):
+    ssl: Optional[_SSLOptions] = None
+    dnf: Union[Optional[_DNFOptions]] = None
+
+
+class RpmPackageInput(_PackageInputBase):
+    options: Optional[OptionsModel] = None
     type: Literal["rpm"]
-    options: Optional[Union[_DNFOptions]] = None
 
 
 class YarnPackageInput(_PackageInputBase):
@@ -180,7 +207,14 @@ class YarnPackageInput(_PackageInputBase):
 
 
 PackageInput = Annotated[
-    Union[GomodPackageInput, NpmPackageInput, PipPackageInput, RpmPackageInput, YarnPackageInput],
+    Union[
+        BundlerPackageInput,
+        GomodPackageInput,
+        NpmPackageInput,
+        PipPackageInput,
+        RpmPackageInput,
+        YarnPackageInput,
+    ],
     # https://pydantic-docs.helpmanual.io/usage/types/#discriminated-unions-aka-tagged-unions
     pydantic.Field(discriminator="type"),
 ]
@@ -225,6 +259,11 @@ class Request(pydantic.BaseModel):
         if len(packages) == 0:
             raise ValueError("at least one package must be defined, got an empty list")
         return packages
+
+    @property
+    def bundler_packages(self) -> list[BundlerPackageInput]:
+        """Get the rubygems packages specified for this request."""
+        return self._packages_by_type(BundlerPackageInput)
 
     @property
     def gomod_packages(self) -> list[GomodPackageInput]:

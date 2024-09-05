@@ -117,3 +117,15 @@ settings.py
 
 # idea files
 .idea/
+
+# Vim temporary files and ctags tags
+*.swp
+*.swo
+tags
+
+# cachi2 default files
+cachi2-output/
+cachi2.env
+# docker
+**/.Dockerfile.swp
+**/Dockerfile.save

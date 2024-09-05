@@ -23,7 +23,6 @@ from typing import (
     Literal,
     Optional,
     Pattern,
-    Sequence,
     Union,
     cast,
     no_type_check,
@@ -38,11 +37,10 @@ from cachi2.core.scm import clone_as_tarball, get_repo_id
 if TYPE_CHECKING:
     from typing_extensions import TypeGuard
 
-import pkg_resources
 import pypi_simple
 import requests
-from packaging.utils import canonicalize_version
-from pkg_resources import Requirement, RequirementParseError
+from packaging.requirements import InvalidRequirement, Requirement
+from packaging.utils import canonicalize_name, canonicalize_version
 
 from cachi2.core.checksum import ChecksumInfo, must_match_any_checksum
 from cachi2.core.config import get_config
@@ -97,30 +95,31 @@ class DistributionPackageInfo:
     index_url: str
     is_yanked: bool
 
+    # PyPi only returns a single checksum for a given download artifact
     pypi_checksums: set[ChecksumInfo] = field(default_factory=set)
-    user_checksums: set[ChecksumInfo] = field(default_factory=set)
+    # "User" checksums *must* come from a 'requirements*.txt' file or equivalent
+    req_file_checksums: set[ChecksumInfo] = field(default_factory=set)
 
-    checksums_to_verify: set[ChecksumInfo] = field(init=False, default_factory=set)
+    checksums_to_match: set[ChecksumInfo] = field(init=False, default_factory=set)
 
     def __post_init__(self) -> None:
-        self.checksums_to_verify = self._determine_checksums_to_verify()
+        self.checksums_to_match = self._determine_checksums_to_match()
 
-    def _determine_checksums_to_verify(self) -> set[ChecksumInfo]:
-        """Determine the set of checksums to verify for a given distribution package."""
+    def _determine_checksums_to_match(self) -> set[ChecksumInfo]:
+        """Determine the set of checksums to match for a given distribution package."""
         checksums: set[ChecksumInfo] = set()
-        matching: set[ChecksumInfo] = self.pypi_checksums.intersection(self.user_checksums)
 
-        if self.pypi_checksums and self.user_checksums:
-            checksums = matching
-            msg = "using intersection of user specified and PyPI reported checksums"
+        if self.pypi_checksums and self.req_file_checksums:
+            checksums = self.pypi_checksums.intersection(self.req_file_checksums)
+            msg = "using intersection of requirements-file and PyPI-reported checksums"
         elif self.pypi_checksums:
             checksums = self.pypi_checksums
-            msg = "using PyPI reported checksums"
-        elif self.user_checksums:
-            checksums = self.user_checksums
-            msg = "using user specified checksums"
+            msg = "using PyPI-reported checksums"
+        elif self.req_file_checksums:
+            checksums = self.req_file_checksums
+            msg = "using requirements-file checksums"
         else:
-            msg = "no checksums reported by PyPI or specified by the user"
+            msg = "no checksums reported by PyPI or specified in requirements file"
 
         log.debug("%s: %s", self.path.name, msg)
         return checksums
@@ -128,20 +127,25 @@ class DistributionPackageInfo:
     def should_download(self) -> bool:
         """Determine if this artifact should be downloaded.
 
-        If the user specified any checksums, but they do not match with those
-        reported by PyPI, we do not want to download the artifact.
+        If there are checksums in the requirements file, but they do not match
+        with those reported by PyPI, we do not want to download the artifact.
 
         Otherwise, we do.
         """
         return (
-            len(self.checksums_to_verify) > 0
+            len(self.checksums_to_match) > 0
             or len(self.pypi_checksums) == 0
-            or len(self.user_checksums) == 0
+            or len(self.req_file_checksums) == 0
         )
 
-    def should_verify_checksums(self) -> bool:
-        """Check if checksum verification is required."""
-        return len(self.checksums_to_verify) > 0
+    @property
+    def has_checksums_to_match(self) -> bool:
+        """Determine if we have checksums to match against.
+
+        This decides whether or not we
+        call `cachi2.core.checksum.must_match_any_checksum()`
+        """
+        return len(self.checksums_to_match) > 0
 
     @property
     def download_info(self) -> dict[str, Any]:
@@ -184,7 +188,7 @@ def fetch_pip_source(request: Request) -> RequestOutput:
             version = dependency["version"] if dependency["kind"] == "pypi" else None
 
             missing_hash_in_file: frozenset = frozenset()
-            if not dependency["hash_verified"]:
+            if dependency["missing_req_file_checksum"]:
                 missing_hash_in_file = frozenset({dependency["requirement_file"]})
 
             pip_package_binary = False
@@ -315,7 +319,7 @@ def _get_pip_metadata(package_dir: RootedPath) -> tuple[str, Optional[str]]:
             package_subpath = package_dir.subpath_from_root
 
             resolved_path = Path(repo_name).joinpath(package_subpath)
-            normalized_path = pkg_resources.safe_name(str(resolved_path))
+            normalized_path = canonicalize_name(str(resolved_path).replace("/", "-"))
             name = normalized_path.strip("-.")
         except UnsupportedFeature:
             raise PackageRejected(
@@ -356,7 +360,7 @@ def _any_to_version(obj: Any) -> str:
         else:
             version = str(version)
 
-    return pkg_resources.safe_version(version)
+    return canonicalize_version(version, strip_trailing_zero=False)
 
 
 def _get_top_level_attr(
@@ -1304,32 +1308,18 @@ class PipRequirement:
             requirement.kind = "pypi"
 
         try:
-            parsed: Sequence[Requirement] = list(pkg_resources.parse_requirements(to_be_parsed))
-        except (
-            RequirementParseError,
-            pkg_resources.extern.packaging.requirements.InvalidRequirement,
-        ) as exc:
+            req = Requirement(to_be_parsed)
+        except InvalidRequirement as exc:
             # see https://github.com/pypa/setuptools/pull/2137
             raise UnexpectedFormat(f"Unable to parse the requirement {to_be_parsed!r}: {exc}")
-
-        if not parsed:
-            return None
-        # parse_requirements is able to process a multi-line string, thus returning multiple
-        # parsed requirements. However, since it cannot handle the additional syntax from a
-        # requirements file, we parse each line individually. The conditional below should
-        # never be reached, but is left here to aid diagnosis in case this assumption is
-        # not correct.
-        if len(parsed) > 1:
-            raise RuntimeError(f"Didn't expect to find multiple requirements in: {line!r}")
-        req: Requirement = parsed[0]
 
         hashes, options = cls._split_hashes_from_options(options)
 
         requirement.download_line = to_be_parsed
         requirement.options = options
-        requirement.package = req.project_name
+        requirement.package = canonicalize_name(req.name)
         requirement.raw_package = req.name
-        requirement.version_specs = req.specs
+        requirement.version_specs = [(spec.operator, spec.version) for spec in req.specifier]
         requirement.extras = req.extras
         requirement.environment_marker = str(req.marker) if req.marker else None
         requirement.hashes = hashes
@@ -1391,13 +1381,13 @@ class PipRequirement:
     def _adjust_direct_access_requirement(
         line: str, direct_ref_pattern: Pattern[str]
     ) -> tuple[str, dict[str, str]]:
-        """Modify the requirement line so it can be parsed by pkg_resources and extract qualifiers.
+        """Modify the requirement line so it can be parsed and extract qualifiers.
 
         :param str line: a direct access requirement line
         :param str direct_ref_pattern: a Regex used to determine if a requirement
             specifies a package name
         :return: two-item tuple where the first item is a modified direct access requirement
-            line that can be parsed by pkg_resources, and the second item is a dict of the
+            line that can be parsed, and the second item is a dict of the
             qualifiers extracted from the direct access URL
         """
         package_name = None
@@ -1437,7 +1427,7 @@ class PipRequirement:
         requirement_parts = [package_name.strip(), "@", url.strip()]
         if environment_marker:
             # Although a space before the semicolon is not needed by pip, it is needed when
-            # using pkg_resources later on.
+            # using packaging later on.
             requirement_parts.append(";")
             requirement_parts.append(environment_marker.strip())
         return " ".join(requirement_parts), qualifiers
@@ -1470,44 +1460,46 @@ class PipRequirement:
 def _process_req(
     req: PipRequirement,
     requirements_file: PipRequirementsFile,
-    require_hashes: bool,
     pip_deps_dir: RootedPath,
     download_info: dict[str, Any],
     dpi: Optional[DistributionPackageInfo] = None,
 ) -> dict[str, Any]:
     download_info["kind"] = req.kind
     download_info["requirement_file"] = str(requirements_file.file_path.subpath_from_root)
-    download_info["hash_verified"] = False
+    download_info["missing_req_file_checksum"] = True
+    # "package_type" is *only* needed for PyPI deps
+    download_info["package_type"] = ""
 
-    def _hash_verify(path: Path, checksum_info: Iterable[ChecksumInfo]) -> bool:
-        verified: bool = False
+    def _checksum_must_match_or_path_unlink(
+        path: Path, checksum_info: Iterable[ChecksumInfo]
+    ) -> None:
         try:
+            # returns None, raises PackageRejected on failure
             must_match_any_checksum(path, checksum_info)
-            verified = True
         except PackageRejected:
             path.unlink()
             log.warning("Download '%s' was removed from the output directory", path.name)
-        return verified
 
     if dpi:
-        if dpi.should_verify_checksums():
-            download_info["hash_verified"] = _hash_verify(dpi.path, dpi.checksums_to_verify)
-
+        if dpi.req_file_checksums:
+            download_info["missing_req_file_checksum"] = False
+        if dpi.has_checksums_to_match:
+            _checksum_must_match_or_path_unlink(dpi.path, dpi.checksums_to_match)
         if dpi.package_type == "sdist":
             _check_metadata_in_sdist(dpi.path)
-
         download_info["package_type"] = dpi.package_type
         download_info["index_url"] = dpi.index_url
-
+    elif req.kind == "vcs":
+        # `missing_req_file_checksum` is *always* True for VCS deps
+        pass
     else:
-        if require_hashes or req.kind == "url":
+        if req.kind == "url":
             hashes = req.hashes or [req.qualifiers.get("cachito_hash", "")]
-            download_info["hash_verified"] = _hash_verify(
-                download_info["path"], list(map(_to_checksum_info, hashes))
-            )
-
-        # "package_type" is *only* needed for PyPI deps
-        download_info["package_type"] = ""
+            if hashes:
+                download_info["missing_req_file_checksum"] = False
+                _checksum_must_match_or_path_unlink(
+                    download_info["path"], list(map(_to_checksum_info, hashes))
+                )
 
     log.debug(
         "Successfully processed '%s' in path '%s'",
@@ -1521,7 +1513,6 @@ def _process_req(
 def _process_pypi_req(
     req: PipRequirement,
     requirements_file: PipRequirementsFile,
-    require_hashes: bool,
     index_url: str,
     pip_deps_dir: RootedPath,
     allow_binary: bool,
@@ -1542,7 +1533,6 @@ def _process_pypi_req(
             _process_req(
                 req,
                 requirements_file,
-                require_hashes,
                 pip_deps_dir,
                 artifact.download_info,
                 dpi=artifact,
@@ -1600,6 +1590,10 @@ def _download_dependencies(
         log.info("At least one dependency uses the --hash option, will require hashes")
         require_hashes = True
     else:
+        # URL deps with a `cachito_hash` qualifier (which is a loophole
+        # allowing for unhashed VCS deps AND URL deps to coexist in a
+        # 'requirements.txt', thus `require_hashes` should NOT be set), will
+        # fall through to this branch.
         log.info(
             "No hash options used, will not require hashes unless HTTP(S) dependencies are present."
         )
@@ -1617,7 +1611,6 @@ def _download_dependencies(
             download_infos: list[dict[str, Any]] = _process_pypi_req(
                 req,
                 requirements_file=requirements_file,
-                require_hashes=require_hashes,
                 index_url=options["index_url"] or pypi_simple.PYPI_SIMPLE_ENDPOINT,
                 pip_deps_dir=pip_deps_dir,
                 allow_binary=allow_binary,
@@ -1627,7 +1620,6 @@ def _download_dependencies(
             download_info = _process_vcs_req(
                 req,
                 requirements_file=requirements_file,
-                require_hashes=require_hashes,
                 pip_deps_dir=pip_deps_dir,
             )
             processed.append(download_info)
@@ -1635,7 +1627,6 @@ def _download_dependencies(
             download_info = _process_url_req(
                 req,
                 requirements_file=requirements_file,
-                require_hashes=require_hashes,
                 pip_deps_dir=pip_deps_dir,
                 trusted_hosts=trusted_hosts,
             )
@@ -1817,8 +1808,11 @@ def _validate_provided_hashes(requirements: list[PipRequirement], require_hashes
             hashes = req.hashes
 
         if require_hashes and not hashes:
-            # This can only happen for non-URL requirements
-            # For URL requirements, having a hash is required to pass basic validation
+            # We shouldn't get here, but it's a definite error if we do.
+            # VCS reqs *cannot* be hashed, so we'll always hit
+            # this for any VCS req in a 'requirements.txt' which has *any* hash
+            # (other than a URL req with `cachito_hash``).
+            # For URL # requirements, having a hash is required to pass *basic* validation.
             msg = f"Hash is required, dependency does not specify any: {req.download_line}"
             raise PackageRejected(
                 msg,
@@ -1871,7 +1865,7 @@ def _process_package_distributions(
     version = requirement.version_specs[0][1]
     normalized_version = canonicalize_version(version)
     sdists: list[DistributionPackageInfo] = []
-    user_checksums = set(map(_to_checksum_info, requirement.hashes))
+    req_file_checksums = set(map(_to_checksum_info, requirement.hashes))
     wheels: list[DistributionPackageInfo] = []
 
     try:
@@ -1906,7 +1900,7 @@ def _process_package_distributions(
             index_url,
             package.is_yanked,
             pypi_checksums,
-            user_checksums,
+            req_file_checksums,
         )
 
         if dpi.should_download():
@@ -2018,11 +2012,11 @@ def _download_url_package(
     download_to = pip_deps_dir.join_within_root(_get_external_requirement_filepath(requirement))
     download_to.path.parent.mkdir(exist_ok=True, parents=True)
 
-    if url.hostname in trusted_hosts:
-        log.debug("Disabling SSL verification, %s is a --trusted-host", url.hostname)
-        insecure = True
-    elif url.port is not None and f"{url.hostname}:{url.port}" in trusted_hosts:
+    if url.port is not None and f"{url.hostname}:{url.port}" in trusted_hosts:
         log.debug("Disabling SSL verification, %s:%s is a --trusted-host", url.hostname, url.port)
+        insecure = True
+    elif url.hostname in trusted_hosts:
+        log.debug("Disabling SSL verification, %s is a --trusted-host", url.hostname)
         insecure = True
     else:
         insecure = False
@@ -2032,9 +2026,7 @@ def _download_url_package(
     if "cachito_hash" in requirement.qualifiers:
         url_with_hash = requirement.url
     else:
-        hashes = requirement.hashes
-        hash_spec = hashes[0] if hashes else requirement.qualifiers["cachito_hash"]
-        url_with_hash = _add_cachito_hash_to_url(url, hash_spec)
+        url_with_hash = _add_cachito_hash_to_url(url, requirement.hashes[0])
 
     return {
         "package": requirement.package,
@@ -2166,13 +2158,13 @@ def _resolve_pip(
         {
             "name": dep["package"],
             "version": _version(dep),
-            "package_type": dep["package_type"],
             "index_url": dep.get("index_url"),
             "type": "pip",
             "dev": dep.get("dev", False),
             "kind": dep["kind"],
-            "hash_verified": dep["hash_verified"],
             "requirement_file": dep["requirement_file"],
+            "missing_req_file_checksum": dep["missing_req_file_checksum"],
+            "package_type": dep["package_type"],
         }
         for dep in (requires + build_requires)
     ]

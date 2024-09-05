@@ -1,14 +1,15 @@
 from configparser import ConfigParser
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
-from unittest import mock
-from urllib.parse import quote
+from unittest import mock, TestCase
+from os import path
+import ssl
 
 import pytest
 import yaml
 from _pytest.logging import LogCaptureFixture
 
-from cachi2.core.errors import PackageManagerError, PackageRejected
+from cachi2.core.errors import PackageManagerError, PackageRejected, SSLContextError
 from cachi2.core.models.input import RpmPackageInput, _DNFOptions
 from cachi2.core.models.sbom import Component, Property
 from cachi2.core.package_managers.rpm import fetch_rpm_source, inject_files_post
@@ -23,6 +24,7 @@ from cachi2.core.package_managers.rpm.main import (
     _Repofile,
     _resolve_rpm_project,
     _verify_downloaded,
+    _get_ssl_context
 )
 from cachi2.core.package_managers.rpm.redhat import RedhatRpmsLock
 from cachi2.core.rooted_path import RootedPath
@@ -300,6 +302,7 @@ def test_resolve_rpm_project_correct_format(
                         "arch": "x86_64",
                         "packages": [
                             {
+                                "repoid": "foo",
                                 "url": "SOME_URL",
                             },
                         ],
@@ -423,63 +426,105 @@ def test_generate_repofiles(
         assert expected == actual
 
 
-@mock.patch("cachi2.core.package_managers.rpm.main.run_cmd")
-def test_generate_sbom_components(mock_run_cmd: mock.Mock) -> None:
-    name = "foo"
-    version = "1.0"
-    release = "2.fc39"
-    arch = "x86_64"
-    vendor = "redhat"
-    epoch = ""
-    mock_run_cmd.return_value = f"{name}\n{version}\n{release}\n{arch}\n{vendor}\n{epoch}"
-    rpm = f"{name}-{version}-{release}.{arch}.rpm"
-    url = f"https://example.com/{rpm}"
-    files_metadata = {
-        Path(f"/path/to/{rpm}"): {
-            "package": True,
-            "url": url,
-            "size": 12345,
-            "checksum": "sha256:21bb2a09852e75a693d277435c162e1a910835c53c3cee7636dd552d450ed0f1",
-        }
-    }
-    components = _generate_sbom_components(files_metadata, Path("rpms.lock.yaml"))
-    assert components == [
-        Component(
-            name=name,
-            version=version,
-            purl=f"pkg:rpm/{vendor}/{name}@{version}-{release}?arch={arch}&download_url={quote(url)}",
-        )
-    ]
+RPM_FILE = "foo-1.0-2.fc39.x86_64.rpm"
+DOWNLOAD_URL = f"https://example.com/{RPM_FILE}"
 
 
+@pytest.mark.parametrize(
+    "opt_rpm_tags,metadata,purl_format_str,sbom_properties",
+    [
+        pytest.param(
+            {},
+            {"repoid": "foorepo", "url": DOWNLOAD_URL, "checksum": "sha256:21bb2a09"},
+            "pkg:rpm/{name}@{version}-{release}?arch={arch}&checksum={checksum}&repository_id={repoid}",
+            [],
+            id="with_repoid_and_url",
+        ),
+        pytest.param(
+            {"vendor": "Fedora Project"},
+            {"repoid": "foorepo", "url": DOWNLOAD_URL, "checksum": "sha256:21bb2a09"},
+            "pkg:rpm/fedora/{name}@{version}-{release}?arch={arch}&checksum={checksum}&repository_id={repoid}",
+            [],
+            id="with_namespace",
+        ),
+        pytest.param(
+            {"vendor": "RPM Fusion"},
+            {"repoid": "foorepo", "url": DOWNLOAD_URL, "checksum": "sha256:21bb2a09"},
+            "pkg:rpm/rpm_fusion/{name}@{version}-{release}?arch={arch}&checksum={checksum}&repository_id={repoid}",
+            [],
+            id="with_normalized_namespace",
+        ),
+        pytest.param(
+            {"epoch": "2"},
+            {"repoid": "foorepo", "url": DOWNLOAD_URL, "checksum": "sha256:21bb2a09"},
+            "pkg:rpm/{name}@{version}-{release}?arch={arch}&checksum={checksum}&epoch={epoch}&repository_id={repoid}",
+            [],
+            id="with_epoch",
+        ),
+        pytest.param(
+            {"arch": "noarch"},
+            {"repoid": "foorepo", "url": DOWNLOAD_URL, "checksum": "sha256:21bb2a09"},
+            "pkg:rpm/{name}@{version}-{release}?arch={arch}&checksum={checksum}&repository_id={repoid}",
+            [],
+            id="with_noarch",
+        ),
+        pytest.param(
+            {},
+            {"repoid": "foorepo", "url": DOWNLOAD_URL, "checksum": "sha256:21bb2a09"},
+            "pkg:rpm/{name}@{version}-{release}?arch=src&checksum={checksum}&repository_id={repoid}",
+            [],
+            id="with_src_rpm",
+        ),
+        pytest.param(
+            {},
+            {"url": DOWNLOAD_URL, "checksum": "sha256:21bb2a09"},
+            "pkg:rpm/{name}@{version}-{release}?arch={arch}&checksum={checksum}&download_url={url}",
+            [],
+            id="no_repoid",
+        ),
+        pytest.param(
+            {},
+            {"repoid": "foorepo", "url": DOWNLOAD_URL},
+            "pkg:rpm/{name}@{version}-{release}?arch={arch}&repository_id={repoid}",
+            [Property(name="cachi2:missing_hash:in_file", value="rpms.lock.yaml")],
+            id="no_checksum",
+        ),
+    ],
+)
 @mock.patch("cachi2.core.package_managers.rpm.main.run_cmd")
-def test_generate_sbom_components_missing_checksum(mock_run_cmd: mock.Mock) -> None:
-    name = "foo"
-    version = "1.0"
-    release = "2.fc39"
-    arch = "x86_64"
-    vendor = "redhat"
-    epoch = ""
-    mock_run_cmd.return_value = f"{name}\n{version}\n{release}\n{arch}\n{vendor}\n{epoch}"
-    rpm = f"{name}-{version}-{release}.{arch}.rpm"
-    url = f"https://example.com/{rpm}"
-    files_metadata = {
-        Path(f"/path/to/{rpm}"): {
-            "package": True,
-            "url": url,
-            "size": 12345,
-            "checksum": None,
-        }
+def test_generate_sbom_components(
+    mock_run_cmd: mock.Mock,
+    opt_rpm_tags: dict[str, str],
+    metadata: dict[str, str],
+    purl_format_str: str,
+    sbom_properties: list[Property],
+    tmp_path: Path,
+    request: pytest.FixtureRequest,
+) -> None:
+    rpm_tags = {
+        "name": "foo",
+        "version": "1.0",
+        "release": "2.fc39",
+        "arch": "x86_64",
     }
+    rpm_tags.update(opt_rpm_tags)
+
+    if request.node.callspec.id == "with_src_rpm":
+        rpm_file_path = tmp_path / Path(RPM_FILE).with_suffix(".src.rpm")
+    else:
+        rpm_file_path = tmp_path / RPM_FILE
+
+    files_metadata = {rpm_file_path: metadata}
+
+    mock_run_cmd.return_value = "\n".join([f"{k}={v}" for k, v in rpm_tags.items()])
     components = _generate_sbom_components(files_metadata, Path("rpms.lock.yaml"))
+
     assert components == [
         Component(
-            name=name,
-            version=version,
-            purl=f"pkg:rpm/{vendor}/{name}@{version}-{release}?arch={arch}&download_url={quote(url)}",
-            properties=[
-                Property(name="cachi2:missing_hash:in_file", value="rpms.lock.yaml"),
-            ],
+            name=rpm_tags["name"],
+            version=rpm_tags["version"],
+            purl=purl_format_str.format(**{**rpm_tags, **metadata}),
+            properties=sbom_properties,
         )
     ]
 
@@ -562,20 +607,13 @@ class TestRedhatRpmsLock:
     def test_internal_repoid(self, mock_uuid: mock.Mock, raw_content: dict) -> None:
         mock_uuid.uuid4.return_value.hex = "abcdefghijklmn"
         lock = RedhatRpmsLock.model_validate(raw_content)
-        assert lock._uuid == "abcdef"
-        assert lock.internal_repoid == "cachi2-abcdef"
+        assert lock.cachi2_repoid == "cachi2-abcdef"
 
     @mock.patch("cachi2.core.package_managers.rpm.redhat.uuid")
     def test_internal_source_repoid(self, mock_uuid: mock.Mock, raw_content: dict) -> None:
         mock_uuid.uuid4.return_value.hex = "abcdefghijklmn"
         lock = RedhatRpmsLock.model_validate(raw_content)
-        assert lock._uuid == "abcdef"
-        assert lock.internal_source_repoid == "cachi2-abcdef-source"
-
-    def test_uuid(self, raw_content: dict) -> None:
-        lock = RedhatRpmsLock.model_validate(raw_content)
-        uuid = lock._uuid
-        assert len(uuid) == 6
+        assert lock.cachi2_source_repoid == "cachi2-abcdef-source"
 
 
 class TestRepofile:
@@ -636,3 +674,83 @@ class TestRepofile:
             _Repofile({"foo": "bar"}).write(f)
 
         mock_apply_defaults.assert_called_once()
+
+
+class TestGetSslContext(TestCase):
+    def patched_isfile(self, path=None):
+        return path == "pass"
+
+    ssl_options = {"ssl":
+                   {"ssl_verify": True,
+                    "client_cert": None,
+                    "client_key": None,
+                    "ca_bundle": None}}
+
+    def test_base_case(self):  # no ssl options defined.
+        ssl_context = _get_ssl_context({"ssl":
+                                        {"ssl_verify": True,
+                                         "client_cert": None,
+                                         "client_key": None,
+                                         "ca_bundle": None}})
+        assert ssl_context.verify_mode is ssl.CERT_REQUIRED
+
+    def test_verify_false(self):  # SSL verify is set to false
+        ssl_options = {"ssl":
+                       {"ssl_verify": False,
+                        "client_cert": None,
+                        "client_key": None,
+                        "ca_bundle": None}}
+        ssl_context = _get_ssl_context(ssl_options)
+        assert ssl_context.verify_mode is ssl.CERT_NONE
+
+    # @mock.patch.object(ssl.SSLContext, "load_cert_chain", return_value=ssl.create_default_context())
+    def test_only_client_cert_defined(self):
+        ssl_options = {"ssl":
+                       {"ssl_verify": True,
+                        "client_cert": "pass",
+                        "client_key": None,
+                        "ca_bundle": None}}
+        self.assertRaises(SSLContextError, _get_ssl_context, ssl_options)
+
+    # @mock.patch.object(ssl.SSLContext, "load_cert_chain", return_value=ssl.create_default_context())
+    def test_only_client_key_defined(self):
+        ssl_options = {"ssl":
+                       {"ssl_verify": True,
+                        "client_cert": None,
+                        "client_key": "pass",
+                        "ca_bundle": None}}
+        self.assertRaises(SSLContextError, _get_ssl_context, ssl_options)
+
+    @mock.patch.object(ssl.SSLContext, "load_cert_chain", return_value=ssl.create_default_context())
+    @mock.patch.object(ssl.SSLContext, "load_verify_locations", return_value=None)
+    def file_not_found_conditions(self):
+        with mock.patch.object(path, 'isfile', side_effect=self.patched_isfile):
+
+            # Test for proper response when a file is specified which cannot be accessed.
+
+            options = {"ssl": {"client_cert": "fail",
+                               "client_key": "pass",
+                               "ca_bundle": "pass",
+                               "ssl_verify": True}}
+            self.assertRaises(SSLContextError, _get_ssl_context, options)
+
+            options = {"ssl": {"client_cert": "pass",
+                               "client_key": "fail",
+                               "ca_bundle": "pass",
+                               "ssl_verify": True}}
+
+            self.assertRaises(SSLContextError, _get_ssl_context, options)
+
+            options = {"ssl": {"client_cert": "pass",
+                               "client_key": "fail",
+                               "ca_bundle": "pass",
+                               "ssl_verify": True}}
+
+            self.assertRaises(SSLContextError, _get_ssl_context, options)
+
+            options = {"ssl": {"client_cert": "pass",
+                               "client_key": "pass",
+                               "ca_bundle": "fail",
+                               "ssl_verify": True}}
+
+            self.assertRaises(SSLContextError, _get_ssl_context, options)
