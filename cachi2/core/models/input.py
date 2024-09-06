@@ -89,18 +89,12 @@ class _SSLOptions(pydantic.BaseModel, extra="forbid"):
     ca_bundle: str = None
     ssl_verify: bool = None
 
-    @pydantic.model_validator(mode="before")
-    def _validate_ssl_options(cls, data: Any, info: pydantic.ValidationInfo) -> Optional[Dict]:
+    # @pydantic.model_validator(mode="before")
+    # def _validate_ssl_options(cls, data: Any, info: pydantic.ValidationInfo) -> Optional[Dict]:
 
-        # todo:could move valiation from _get_ssl_context to here
-        return data
+    #     # todo:could move valiation from _get_ssl_context to here
+    #     return data
 
-
-# class OptionsModel(pydantic.BaseModel):
-#     """Optional inputs for RPM package manager."""
-
-#     ssl: Optional[_SSLOptions] = None
-#     dnf: Union[Optional[_DNFOptions]] = None
 
 class _DNFOptions(pydantic.BaseModel, extra="forbid"):
     """DNF options model.
@@ -117,8 +111,6 @@ class _DNFOptions(pydantic.BaseModel, extra="forbid"):
 
     [1] https://man7.org/linux/man-pages/man5/dnf.conf.5.html
     """
-
-    ssl: Optional[_SSLOptions] = None
 
     # Don't model all known DNF options for validation purposes - it's user's responsibility!
     dnf: Dict[Union[Literal["main"], str], Dict[str, Any]] = None
@@ -139,14 +131,9 @@ class _DNFOptions(pydantic.BaseModel, extra="forbid"):
         if not isinstance(data, dict):
             _raise_unexpected_type(data, *prefixes)
 
-        extra_keys = set(data.keys() - set(cls.model_fields))
-        if extra_keys:
-            raise ValueError(f"Extra attributes passed in '{data}': {extra_keys}")
-
-        if "dnf" not in data:
-            # the rest of this is about validating the contents of dnf, don't run it.
+        if 'dnf' not in data.keys():
             return data
-        
+
         prefixes.append("dnf")
         options_scope = data["dnf"]
         if not isinstance(options_scope, dict):
@@ -204,8 +191,16 @@ class PipPackageInput(_PackageInputBase):
 class RpmPackageInput(_PackageInputBase):
     """Accepted input for RPM package manager."""
 
-    options: Optional[_DNFOptions] = None
+    options: Optional[Union[_DNFOptions, _SSLOptions]] = None
     type: Literal["rpm"]
+
+    # @pydantic.model_validator(mode="before")
+    # def _validate_dnf_options(cls, data: Any, info: pydantic.ValidationInfo) -> Optional[Dict]:
+    #     """Fail if the user passes unexpected configuration options namespace."""
+
+    #     extra_keys = set(data.keys() - set(cls.model_fields))
+    #     if extra_keys:
+    #         raise ValueError(f"Extra attributes passed in '{data}': {extra_keys}")
 
 
 class YarnPackageInput(_PackageInputBase):

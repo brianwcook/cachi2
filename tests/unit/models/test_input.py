@@ -112,12 +112,28 @@ class TestPackageInput:
                     },
                 },
             ),
+            (
+                {
+                    "type": "rpm",
+                    "options": {
+                        "ssl": {
+                            "ssl_verify": 0
+                        }
+                    },
+                },
+                {
+                    "type": "rpm",
+                    "path": Path("."),
+                    "options": {
+                        "ssl"
+                    },
+                },
+            ),
         ],
     )
     def test_valid_packages(self, input_data: dict[str, Any], expect_data: dict[str, Any]) -> None:
         adapter: pydantic.TypeAdapter[PackageInput] = pydantic.TypeAdapter(PackageInput)
         package = cast(PackageInput, adapter.validate_python(input_data))
-        print(str(package.model_dump()))
         assert package.model_dump() == expect_data
 
     @pytest.mark.parametrize(
@@ -173,7 +189,7 @@ class TestPackageInput:
             ),
             pytest.param(
                 {"type": "rpm", "options": {"unknown": "foo"}},
-                r"Missing required namespace attribute in '{\'unknown\': \'foo\'}': 'dnf'",
+                r"Extra inputs are not permitted",
                 id="rpm_missing_required_namespace_dnf",
             ),
             pytest.param(
