@@ -125,7 +125,12 @@ class TestPackageInput:
                     "type": "rpm",
                     "path": Path("."),
                     "options": {
-                        "ssl"
+                        "ssl": {
+                            "ca_bundle": None,
+                            "client_cert": None,
+                            "client_key": None,
+                            "ssl_verify": 0
+                        }
                     },
                 },
             ),

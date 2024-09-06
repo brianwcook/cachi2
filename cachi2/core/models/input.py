@@ -76,8 +76,8 @@ class _PackageInputBase(pydantic.BaseModel, extra="forbid"):
     def _path_is_relative(cls, path: Path) -> Path:
         return check_sane_relpath(path)
 
-
-class _SSLOptions(pydantic.BaseModel, extra="forbid"):
+    
+class _SSLFields(pydantic.BaseModel, extra="forbid"):
     """SSL options model.
 
     Provides the 'ssl' key under 'options' for rpm package manager.
@@ -94,6 +94,12 @@ class _SSLOptions(pydantic.BaseModel, extra="forbid"):
 
     #     # todo:could move valiation from _get_ssl_context to here
     #     return data
+
+
+class _SSLOptions(pydantic.BaseModel, extra="forbid"):
+    """SSL options model."""
+
+    ssl: _SSLFields
 
 
 class _DNFOptions(pydantic.BaseModel, extra="forbid"):
@@ -194,13 +200,14 @@ class RpmPackageInput(_PackageInputBase):
     options: Optional[Union[_DNFOptions, _SSLOptions]] = None
     type: Literal["rpm"]
 
-    # @pydantic.model_validator(mode="before")
-    # def _validate_dnf_options(cls, data: Any, info: pydantic.ValidationInfo) -> Optional[Dict]:
-    #     """Fail if the user passes unexpected configuration options namespace."""
+    @pydantic.model_validator(mode="before")
+    def _validate_rpm_package_input(cls, data: Any, info: pydantic.ValidationInfo) -> Optional[Dict]:
+        """Fail if the user passes unexpected configuration options namespace."""
 
-    #     extra_keys = set(data.keys() - set(cls.model_fields))
-    #     if extra_keys:
-    #         raise ValueError(f"Extra attributes passed in '{data}': {extra_keys}")
+        # extra_keys = set(data.keys() - set(cls.model_fields))
+        # if extra_keys:
+        #     raise ValueError(f"Extra attributes passed in '{data}': {extra_keys}")
+        return data
 
 
 class YarnPackageInput(_PackageInputBase):
