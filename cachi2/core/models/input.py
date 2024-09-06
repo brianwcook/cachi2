@@ -77,6 +77,32 @@ class _PackageInputBase(pydantic.BaseModel, extra="forbid"):
         return check_sane_relpath(path)
 
 
+
+class _SSLOptions(pydantic.BaseModel, extra="forbid"):
+    """SSL options model.
+
+    Provides the 'ssl' key under 'options' for rpm package manager.
+
+    """
+
+    client_cert: str = None
+    client_key: str = None
+    ca_bundle: str = None
+    ssl_verify: bool = None
+
+    @pydantic.model_validator(mode="before")
+    def _validate_ssl_options(cls, data: Any, info: pydantic.ValidationInfo) -> Optional[Dict]:
+
+        # todo:could move valiation from _get_ssl_context to here
+        return data
+
+
+# class OptionsModel(pydantic.BaseModel):
+#     """Optional inputs for RPM package manager."""
+
+#     ssl: Optional[_SSLOptions] = None
+#     dnf: Union[Optional[_DNFOptions]] = None
+
 class _DNFOptions(pydantic.BaseModel, extra="forbid"):
     """DNF options model.
 
@@ -93,8 +119,9 @@ class _DNFOptions(pydantic.BaseModel, extra="forbid"):
     [1] https://man7.org/linux/man-pages/man5/dnf.conf.5.html
     """
 
+    ssl: Optional[_SSLOptions] = None
     # Don't model all known DNF options for validation purposes - it's user's responsibility!
-    dnf: Dict[Union[Literal["main"], str], Dict[str, Any]]
+    dnf: Dict[Union[Literal["main"], str], Dict[str, Any]] = None
 
     @pydantic.model_validator(mode="before")
     def _validate_dnf_options(cls, data: Any, info: pydantic.ValidationInfo) -> Optional[Dict]:
@@ -172,36 +199,10 @@ class PipPackageInput(_PackageInputBase):
         return paths
 
 
-class _SSLOptions(pydantic.BaseModel, extra="forbid"):
-    """SSL options model.
-
-    Provides the 'ssl' key under 'options' for rpm package manager.
-
-    """
-
-    client_cert: str = None
-    client_key: str = None
-    ca_bundle: str = None
-    ssl_verify: bool = None
-
-    @pydantic.model_validator(mode="before")
-    def _validate_ssl_options(cls, data: Any, info: pydantic.ValidationInfo) -> Optional[Dict]:
-
-        # todo:could move valiation from _get_ssl_context to here
-        return data
-
-
-class OptionsModel(pydantic.BaseModel):
-    """Optional inputs for RPM package manager."""
-
-    ssl: Optional[_SSLOptions] = None
-    dnf: Union[Optional[_DNFOptions]] = None
-
-
 class RpmPackageInput(_PackageInputBase):
     """Accepted input for RPM package manager."""
 
-    options: Optional[OptionsModel] = None
+    options: Optional[_DNFOptions] = None
     type: Literal["rpm"]
 
 

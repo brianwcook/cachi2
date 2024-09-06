@@ -117,6 +117,7 @@ class TestPackageInput:
     def test_valid_packages(self, input_data: dict[str, Any], expect_data: dict[str, Any]) -> None:
         adapter: pydantic.TypeAdapter[PackageInput] = pydantic.TypeAdapter(PackageInput)
         package = cast(PackageInput, adapter.validate_python(input_data))
+        print(str(package.model_dump()))
         assert package.model_dump() == expect_data
 
     @pytest.mark.parametrize(
