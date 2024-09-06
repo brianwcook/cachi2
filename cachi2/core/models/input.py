@@ -77,7 +77,6 @@ class _PackageInputBase(pydantic.BaseModel, extra="forbid"):
         return check_sane_relpath(path)
 
 
-
 class _SSLOptions(pydantic.BaseModel, extra="forbid"):
     """SSL options model.
 
@@ -120,6 +119,7 @@ class _DNFOptions(pydantic.BaseModel, extra="forbid"):
     """
 
     ssl: Optional[_SSLOptions] = None
+
     # Don't model all known DNF options for validation purposes - it's user's responsibility!
     dnf: Dict[Union[Literal["main"], str], Dict[str, Any]] = None
 
@@ -139,12 +139,14 @@ class _DNFOptions(pydantic.BaseModel, extra="forbid"):
         if not isinstance(data, dict):
             _raise_unexpected_type(data, *prefixes)
 
+        extra_keys = set(data.keys() - set(cls.model_fields))
+        if extra_keys:
+            raise ValueError(f"Extra attributes passed in '{data}': {extra_keys}")
+
         if "dnf" not in data:
-            raise ValueError(f"Missing required namespace attribute in '{data}': 'dnf'")
-
-        if diff := set(cls.model_fields) - set(data.keys()):
-            raise ValueError(f"Extra attributes passed in '{data}': {diff}")
-
+            # the rest of this is about validating the contents of dnf, don't run it.
+            return data
+        
         prefixes.append("dnf")
         options_scope = data["dnf"]
         if not isinstance(options_scope, dict):
