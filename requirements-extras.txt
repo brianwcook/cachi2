@@ -767,9 +767,9 @@ pygments==2.18.0 \
     --hash=sha256:786ff802f32e91311bff3889f6e9a86e81505fe99f2735bb6d60ae0c5004f199 \
     --hash=sha256:b8e6aca0523f3ab76fee51799c488e38782ac06eafcf95e7ba832985c8e7b13a
     # via rich
-pypi-simple==1.6.0 \
-    --hash=sha256:d0e6c670f2e49757bb061404121ef78b869e5054fb68eed2d22e3b1c159e3187 \
-    --hash=sha256:f5616f5560bd5a86ebaa4264a5e70043cafd06d7b84b1f55027ed0e4a45092b6
+pypi-simple==1.6.1 \
+    --hash=sha256:4d2ec96a3b0f78d55024cf1e2cf30f3bc0d8b7dd2a7ccbbd469722fca1b4fbd2 \
+    --hash=sha256:b5124852a4da60316af056db9a4020fa4fcd851a0e607f80f1ebd7756d2ed8d0
     # via cachi2 (pyproject.toml)
 pytest==8.3.2 \
     --hash=sha256:4ba08f9ae7dcf84ded419494d229b48d0903ea6407b030eaec46df5e6a73bba5 \
