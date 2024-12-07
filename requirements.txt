@@ -356,9 +356,9 @@ idna==3.10 \
     # via
     #   requests
     #   yarl
-mailbits==0.2.1 \
-    --hash=sha256:04c06b036bba93067d96b08288780ae7002ba604ac7b205bc55dca52474fc3e2 \
-    --hash=sha256:eb53610e01611a95d2ae46559e00d862d907c776e88034dd53020a53baac21d1
+mailbits==0.2.2 \
+    --hash=sha256:72cd08926b3d0276607a4441ed5a059c4526409d8db2d57e0a6b23996a000bf8 \
+    --hash=sha256:9ddbfc65d7d7fc0a09b82a123cb480f21aa38b3f7ae58bf71a81b4399b3217d5
     # via pypi-simple
 markdown-it-py==3.0.0 \
     --hash=sha256:355216845c60bd96232cd8d8c40e8f9765cc86f46880e43a8fd22dc1a1a8cab1 \
