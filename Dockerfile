@@ -1,4 +1,4 @@
-FROM registry.access.redhat.com/ubi9/ubi@sha256:2bae9062eddbbc18e76555972e7026ffe02cef560a0076e6d7f72bed2c05723f as ubi
+FROM registry.access.redhat.com/ubi9/ubi@sha256:aa149a2e32725b0ea9c8ac97d25e65a894b1a4b2f220dd7670d890e60a733a14 as ubi
 FROM docker.io/library/golang:1.20.0-bullseye as golang_120
 FROM docker.io/library/golang:1.21.0-bullseye as golang_121
 FROM docker.io/library/node:23.3.0-bullseye as node
